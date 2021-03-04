@@ -1,0 +1,28 @@
+{
+  "op": 4,
+  "d": {
+    "video_codec": null,
+    "secret_key": [ 214, 173, 167, 248, 146, 103, 244, 56, 21, 222, 93, 140, 176, 226, 227, 168, 173, 162, 107, 253, 237, 197, 76, 98, 118, 59, 253, 250, 193, 194, 32, 252 ],
+    "mode": "xsalsa20_poly1305",
+    "media_session_id": "f43dbb6a4fed283461e0771815ea74e5",
+    "encodings": [
+      {
+        "type": "audio",
+        "ssrc": 1511053,
+        "rid": "",
+        "max_bitrate": 0,
+        "active": true
+      },
+      {
+        "type": "video",
+        "ssrc": 1511054,
+        "scale_resolution_down_by": 0,
+        "rtx_ssrc": 1511055,
+        "rid": "",
+        "max_bitrate": 0,
+        "active": false
+      }
+    ],
+    "audio_codec": "opus"
+  }
+}

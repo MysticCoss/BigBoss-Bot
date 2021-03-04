@@ -88,7 +88,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Program Files %28x86%29\OpenSSL\include;D:\Computer Vault\Code\boost_1_75_0;D:\Computer Vault\Code\websocketpp-master\websocketpp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Program Files %28x86%29\OpenSSL\include;D:\Computer Vault\Code\boost_1_75_0;D:\Computer Vault\Code\websocketpp-master\websocketpp;D:\Computer Vault\Code\MultipleConsoles_src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -105,7 +105,8 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>D:\Computer Vault\Code\curl-master\builds\libcurl-vc-x86-debug-static-ssl-static-zlib-static-ipv6-sspi\include;C:\Program Files %28x86%29\OpenSSL\include;D:\Computer Vault\Code\boost_1_75_0;D:\Computer Vault\Code\websocketpp-master\websocketpp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Program Files %28x86%29\OpenSSL\include;D:\Computer Vault\Code\boost_1_75_0;D:\Computer Vault\Code\websocketpp-master\websocketpp;D:\Computer Vault\Code\MultipleConsoles_src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -145,7 +146,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="udp.hpp" />
     <ClCompile Include="Websocket.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="udp.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
