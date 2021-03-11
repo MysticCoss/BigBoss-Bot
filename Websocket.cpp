@@ -75,8 +75,28 @@ struct querryqueue {
     }
 };
 
-
-
+struct userinfo {
+    std::string userid = "";
+    std::string guildid = "";
+    std::string channelid = "";
+    std::string sessionid = "";
+    void update(json data) {
+        if (data["d"]["channel_id"].is_null()) {
+            channelid = "";
+        }
+        else channelid = data["d"]["channel_id"];
+        userid = data["d"]["user_id"];
+        guildid = data["d"]["guild_id"];
+        sessionid = data["d"]["session_id"];
+        std::cout << "Update cache data for user " << userid << " in guild " << guildid << ": Channel ID = " << (channelid == "" ? "NULL" : channelid) << ", session ID = " << sessionid << std::endl;
+    }
+    std::string get_voice_channel_id() {
+        return channelid;
+    }
+    std::string get_session_id() {
+        return sessionid;
+    }
+};
 
 class discordbot {
 public:
@@ -117,7 +137,7 @@ public:
                         }*/
         static bool parse(std::string* output, std::string param, std::string msg) {
             if (isStartWith(msg, param)) {
-                std::string result = msg.erase(0, param.length()+1); //delete param from content, including space
+                std::string result = msg.erase(0, param.length() + 1); //delete param from content, including space
                 if (result == "") { //validate result
                     return false;
                 }
@@ -260,6 +280,19 @@ public:
         static void sleep(int ms) {
             std::this_thread::sleep_for(std::chrono::milliseconds(ms));
         }
+
+        static void sleepmcs(int mcs) {
+            std::this_thread::sleep_for(std::chrono::microseconds(mcs));
+        }
+
+        static void sleepex(int ms) {
+            auto now = std::chrono::system_clock::now();
+            int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - now).count();
+            while (elapsed < ms) {
+                sleepmcs(50);    
+                elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - now).count();
+            }
+        }
         static bool isStartWith(std::string source, std::string prefix) {
             return source.rfind(prefix, 0) == 0 ? true : false;
         }
@@ -267,13 +300,6 @@ public:
             CURL* curl = curl_easy_init();
             if (curl) {
                 struct curl_slist* list = NULL;
-
-                //for (int i = 0; i < zzzz.length(); ++i) {
-                //    out2 << '%' << std::hex << std::uppercase << (int)(unsigned char)zzzz[i];
-                //}
-                //cout << out.str() << endl;
-                //cout << out2.str() << endl;
-                //SSL option
                 curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1);
                 curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 1);
                 /* Provide CA Certs from http://curl.haxx.se/docs/caextract.html */
@@ -315,7 +341,7 @@ public:
             }
         }
 
-        static void restart(websocketpp::connection_hdl hdl, client* c, concurrency::cancellation_token_source *cts, concurrency::cancellation_token *token, concurrency::task<void> *t) {
+        static void restart(websocketpp::connection_hdl hdl, client* c, concurrency::cancellation_token_source* cts, concurrency::cancellation_token* token, concurrency::task<void>* t) {
             std::cout << "================================Websocket restart================================\n";
             cts->cancel();
             t->wait();
@@ -325,15 +351,7 @@ public:
             *cts = concurrency::cancellation_token_source();
             *token = cts->get_token();
             std::cout << "Cancel token reset\n";
-            //
 
-            websocketpp::lib::error_code ec;
-            //c->close(hdl, websocketpp::close::status::going_away, "",ec);
-            if (ec) {
-                std::cout << "Can not close endpoint because" << ec.message() << std::endl;
-            }
-            //std::cout << "=======================Stop heartbeating=======================\n";
-            
         }
 
         static json sendMsg(std::string msg, std::string channelID, bool debug = false) {
@@ -441,6 +459,10 @@ public:
     class voiceclient {
     public:
         //Variable zone
+        std::queue<std::string> selfqueue; //queue for video id
+        client* gatewayclient; //cache gateway endpoint
+        websocketpp::connection_hdl gatewayhdl; //cache gateway hdl for sending message
+        int offset = 0;
         std::vector<unsigned char> key;
         udp::udpclient udpclient;
         std::string user_id = "";
@@ -448,7 +470,10 @@ public:
         std::string guildid = "";
         std::string endpoint = "";
         std::string session = "";
-        unsigned short FrameInterval = 56;
+        bool first_time = true;
+        bool running = false;
+        bool connect = false;
+        unsigned short FrameInterval = 12;
         //int a[6];
         int ssrc = 0;
         int heartbeat_interval = 0;
@@ -460,12 +485,16 @@ public:
         websocketpp::connection_hdl hdl;
         //client::connection_ptr con_ptr;
         concurrency::cancellation_token_source cts;
-        //this and
         concurrency::cancellation_token token = cts.get_token(); //this is global token specially for cancelling heartbeat func
         concurrency::task<void> t;
+
+        concurrency::cancellation_token_source p_cts;
+        concurrency::cancellation_token p_token = p_cts.get_token();
+        concurrency::task<void> playing;
+
         //
 
-        void setFrameInterval (std::string interval){
+        void setFrameInterval(std::string interval) {
             FrameInterval = (unsigned short)stoi(interval);
             std::cout << "Changed frame interval: " << FrameInterval;
             return;
@@ -594,12 +623,14 @@ public:
             std::shared_ptr<int> shared_heartbeat = std::make_shared<int>(heartbeat_interval);                              //share interval 
             std::shared_ptr<int*> shared_seq_num = std::make_shared<int*>(&seq_num);
             std::shared_ptr<client*> shared_client_context = std::make_shared<client*>(c);
-            concurrency::cancellation_token this_is_token = *token;
-            return concurrency::create_task([shared_heartbeat, shared_hdl, shared_client_context, shared_seq_num, this_is_token, this]
+            //concurrency::cancellation_token this_is_token = *token;
+            return concurrency::create_task([shared_heartbeat, shared_hdl, shared_client_context, shared_seq_num, token, this]
                 {
                     //check is task is canceled
-                    if (this_is_token.is_canceled()) {
+                    if (token->is_canceled()) {
+                        std::cout << "<Voiceclient> Stop heartbeating";
                         concurrency::cancel_current_task();
+                        return;
                     }
                     else {
                         while (*shared_heartbeat == 50) {
@@ -617,7 +648,7 @@ public:
                             while (!ec) {
                                 int localhb = *shared_heartbeat;
                                 while (localhb) {
-                                    if (this_is_token.is_canceled()) {
+                                    if (token->is_canceled()) {
                                         std::cout << "Stop heartbeating...\n";
                                         concurrency::cancel_current_task();
                                     }
@@ -633,10 +664,11 @@ public:
                             std::cout << "Heartbeat failed because: " << ec.message() << std::endl;
                         }
                     }
-                }, this_is_token);
+                });
         }
 
         concurrency::task<void> on_message(client* c, websocketpp::connection_hdl hdl, message_ptr msg) {
+            this->hdl = hdl;
             auto s_is_restart = std::make_shared<bool*>(&is_websocket_restart);
             auto s_hbi = std::make_shared<int>(heartbeat_interval);
             auto s_token = std::make_shared<concurrency::cancellation_token*>(&token);
@@ -645,9 +677,7 @@ public:
             auto s_ready = std::make_shared<json*>(&ready);
             auto s_t = std::make_shared<concurrency::task<void>*>(&t);
             return concurrency::create_task([c, hdl, msg, s_is_restart, s_hbi, s_token, s_sn, s_ready, s_t, s_cts, this] {
-                std::cout << "<Voiceclient> on_message called with hdl: " << hdl.lock().get()
-                    << " and message: ";
-
+                std::cout << "<Voiceclient> on_message called with hdl: " << hdl.lock().get() << " and message: ";
                 std::cout << (msg->get_payload())
                     << std::endl;
                 std::cout << "Now begin parsing data"
@@ -702,8 +732,6 @@ public:
                     }
                     if (js_msg["d"]["secret_key"].is_array()) {
                         std::cout << "Encryt key: " << js_msg["d"]["secret_key"] << std::endl;
-                        unsigned char a[32];
-                        std::vector<unsigned char> b = js_msg["d"]["secret_key"];
                         //std::cout << "oh let's parse key: ";
                         for (int i = 0; i < 32; i++) {
                             key.push_back(js_msg["d"]["secret_key"][i]);
@@ -716,36 +744,86 @@ public:
                         std::cout << "Can not parse secret key \n";
                         break;
                     }
-                    
                 }
-            });
+                });
         }
 
         void on_close(client* c, websocketpp::connection_hdl hdl) {
             c->get_alog().write(websocketpp::log::alevel::app, "<Voiceclient> Connection Closed");
             std::cout << "Connection closed on hdl: " << hdl.lock().get() << std::endl;
-            std::string uri = "wss://" + endpoint;
-            websocketpp::lib::error_code ec;
-            client::connection_ptr con_ptr = c->get_connection(uri, ec);
-            if (ec) {
-                std::cout << "Could not create connection because: " << ec.message() << std::endl;
-                return;
-            }
-            // Note that connect here only requests a connection. No network messages are
-            // exchanged until the event loop starts running in the next line.
-            c->connect(con_ptr);
+            connect = false;
         }
-        //voice.start(endpoint, guildid, _token, session);
-        void start(std::string uri, std::string guildid, std::string _token, std::string session, std::string user_id) {
-            //CConsoleLogger another_console;
-            //voiceClientConsole.Create("wow");
-            //voiceClientConsole.print("WOW!!");
+
+        void leave() {
+            cleanup();
+        }
+
+        //skip current playing track
+        void skip() {
+
+        }
+
+        //remove a song in current queue
+        void remove(int position) {
+
+        }
+        void cleanup() {
+            if (connect) {
+                std::cout << "Connection close, performing cleanup\n";
+
+                cts.cancel();
+                t.wait();
+
+                p_cts.cancel();
+                if (running) {
+                    playing.wait();
+                }
+
+                websocketpp::lib::error_code ec;
+                client::connection_ptr con_ptr = c.get_con_from_hdl(hdl);
+                con_ptr->close(websocketpp::close::status::service_restart, "", ec);
+                if (ec) {
+                    std::cout << "Can not close connection because: " << ec.message() << std::endl;
+                }
+                while (connect) {
+                    std::cout << "Waiting for close handshake\n";
+                    utils::sleep(50);
+                }
+
+                //reset token
+                cts = concurrency::cancellation_token_source();
+                token = cts.get_token();
+
+                //reset play token
+                p_cts = concurrency::cancellation_token_source();
+                p_token = p_cts.get_token();
+
+
+                key.clear();
+                udpclient.cleanup();
+
+                std::queue<std::string> empty;
+                std::swap(selfqueue, empty);
+
+                endpoint = "";
+                guildid = "";
+                _token = "";
+                session = "";
+                user_id = "";
+                state = false;
+            }
+            else return;
+        }
+        
+        void start(client* gatewayclient, websocketpp::connection_hdl gatewayhdl, std::string uri, std::string guildid, std::string _token, std::string session, std::string user_id) {
             sodium_init();
             this->endpoint = uri;
             this->guildid = guildid;
             this->_token = _token;
             this->session = session;
             this->user_id = user_id;
+            this->gatewayclient = gatewayclient;
+            this->gatewayhdl = gatewayhdl;
             uri = R"(wss://)" + uri + R"(/?v=4)";
             websocketpp::lib::error_code ec;
             std::cout << "Voice connection established to: " << uri << std::endl;
@@ -758,25 +836,47 @@ public:
             // Note that connect here only requests a connection. No network messages are
             // exchanged until the event loop starts running in the next line.
             c.set_close_handler(bind(&voiceclient::on_close, this, &c, ::_1));
+            c.reset();
             c.connect(con_ptr);
-            c.start_perpetual();
-            concurrency::create_task([this] {
-                c.run();
-            });
+            connect = true;
+            if (first_time) {
+                first_time = false;
+                concurrency::create_task([this] {
+                    c.run();
+                    });
+            }
+            auto shared_token = std::make_shared<concurrency::cancellation_token*>(&p_token);
+            concurrency::create_task([this, shared_token] {
+                while (1) {
+                    if (selfqueue.size() > 0) {
+                        this->playing = play(selfqueue.front());
+                        selfqueue.pop();
+                        playing.wait();
+                        if ((*shared_token)->is_canceled()) {
+                            return;
+                        }
+                    } 
+                    else {
+                        utils::sleep(1000);
+                    }
+                }
+                });
         }
 
-        concurrency::task<void> play(std::string path) {
-            return concurrency::create_task([this, path] {
+        concurrency::task<void> play(std::string id) {
+            auto shared_token = std::make_shared<concurrency::cancellation_token*>(&p_token);
+            return concurrency::create_task([this, id, shared_token] {
                 //audio source(path);
-                audio* source = new audio(path);
+                speak();
+                audio* source = new audio(id);
                 printf("creating opus encoder\n");
-                const unsigned short FRAME_MILLIS = 60;
-                const unsigned short FRAME_SIZE = 2880;
+                const unsigned short FRAME_MILLIS = 20;
+                const unsigned short FRAME_SIZE = 960;
                 const unsigned short SAMPLE_RATE = 48000;
                 const unsigned short CHANNELS = 2;
                 const unsigned int BITRATE = 64000;
-                
-                #define MAX_PACKET_SIZE FRAME_SIZE * 12
+
+                #define MAX_PACKET_SIZE FRAME_SIZE * 5
                 int error;
                 OpusEncoder* encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, OPUS_APPLICATION_AUDIO, &error);
                 if (error < 0) {
@@ -812,57 +912,68 @@ public:
 
                 timer_event* run_timer = new timer_event();
                 run_timer->set();
-
+                running = true;
+                concurrency::create_task([run_timer, this, shared_token] {
+                    while (run_timer->get_is_set()) {
+                        speak();
+                        int i = 0;
+                        while (i < 15) {
+                            utils::sleep(1000);
+                            if (run_timer->get_is_set() == false) {
+                                std::cout << "Stop sending speak packet due to turn off\n";
+                                concurrency::cancel_current_task();
+                                return;
+                            }
+                            if ((*shared_token)->is_canceled()) {
+                                std::cout << "Stop sending speak packet due to cancel\n";
+                                concurrency::cancel_current_task();
+                                return;
+                            }
+                        }
+                    }});
                 std::queue<std::string>* buffer = new std::queue<std::string>();
                 unsigned short* interval = &FrameInterval;
-                auto timer = concurrency::create_task([run_timer, this, buffer, FRAME_MILLIS, interval] {
-                    utils::sleep(5 * FRAME_MILLIS);
-                    int i = 0;
-                    concurrency::create_task([run_timer, this] {
-                        while (run_timer->get_is_set()) {
-                            speak();
-                            utils::sleep(5000);
-                        }});
+                auto timer = concurrency::create_task([run_timer, this, buffer, FRAME_MILLIS, interval, shared_token] {
                     while (run_timer->get_is_set() || buffer->size() > 0) {
-                        unsigned short modified = 14;
-                        unsigned short modified15 = 15;
-                        unsigned short test = 48;
-                        if (i == 1) {
-                            i = 0;
-                            utils::sleep(*interval);
-                            concurrency::create_task([this, buffer] {
-                                if (buffer->size() > 0) {
-                                    udpclient.send(buffer->front());
-                                    buffer->pop();
-                                }
-                                });
-                        }
-                        else {
-                            i = 1;
-                            utils::sleep(*interval);
-                            concurrency::create_task([this, buffer] {
-                                if (buffer->size() > 0) {
-                                    udpclient.send(buffer->front());
-                                    buffer->pop();
-                                }
-                                });
-                        }
+                        utils::sleep(5 * FRAME_MILLIS);
+                        int loop = 0;
+                        auto start = std::chrono::system_clock::now();
+                        while (buffer->size() > 0) { 
+                            if (udpclient.send(buffer->front()) != 0) {
+                                std::cout << "Stop sendding voice data due to udp error";
+                                return;
+                            }
+                            //udpclient.send(buffer->front());
+                            //udpclient.send(buffer->front());
+                            buffer->pop();
+                            loop++;
+                            int next_time = (FRAME_MILLIS) * loop;
+                            auto now = std::chrono::system_clock::now();
+                            int ms_elapsed = (std::chrono::duration_cast<std::chrono::milliseconds>(now - start)).count(); // elapsed time from start loop
+                            int delay = std::max(0, FRAME_MILLIS+ (next_time - ms_elapsed));
+                            if ((*shared_token)->is_canceled()) {
+                                std::cout << "Stop sending voice data due to cancel\n";
+                                concurrency::cancel_current_task();
+                                return;
+                            }
+                            utils::sleepex(delay-FrameInterval);
+                        }     
                     }
                     });
                 unsigned short _sequence = 0;
                 unsigned int _timestamp = 0;
                 int totalsize = 0;
-                concurrency::create_task([this] {
-
-                    }).wait();
                 while (1) {
-                    if (buffer->size() >= 10) {
+                    if (buffer->size() >= 50) {
                         utils::sleep(FRAME_MILLIS);
                     }
 
                     if (source->read((char*)pcm_data, FRAME_SIZE * CHANNELS * 2) != true)
                         break;
-
+                    if ((*shared_token)->is_canceled()) {
+                        std::cout << "Stop encoding due to cancel\n";
+                        break;
+                    }
                     in_data = reinterpret_cast<opus_int16*>(pcm_data);
 
                     num_opus_bytes = opus_encode(encoder, in_data, FRAME_SIZE, opus_data.data(), MAX_PACKET_SIZE);
@@ -891,7 +1002,7 @@ public:
                     packet[11] = (unsigned char)ssrc;
 
                     _sequence++;
-                    _timestamp += SAMPLE_RATE / 1000 * FRAME_MILLIS;
+                    _timestamp += ((SAMPLE_RATE) / 1000 * (FRAME_MILLIS));
 
                     unsigned char nonce[crypto_secretbox_NONCEBYTES];
                     memset(nonce, 0, crypto_secretbox_NONCEBYTES);
@@ -916,11 +1027,11 @@ public:
                     //std::cout << "\nTotal size: " << totalsize;
                     buffer->push(msg);
                 }
-                std::cout << "\nTotal size: " << totalsize;
+                std::cout << "Total size: " << totalsize << std::endl;
                 run_timer->unset();
+                running = false;
+                timer.wait();   
                 unspeak();
-                timer.wait();
-
                 delete run_timer;
                 delete buffer;
 
@@ -928,7 +1039,6 @@ public:
 
                 delete[] pcm_data;
 
-                printf("finished playing audio\n");
                 });
         }
 
@@ -945,7 +1055,7 @@ public:
                 });
         }
 
-        voiceclient () {
+        voiceclient() {
             //client c;
             //uri = R"(wss://)" + uri;
             try {
@@ -957,9 +1067,10 @@ public:
                 c.set_tls_init_handler(bind(&utils::on_tls_init));
                 // Register our message handler
                 c.set_message_handler(bind(&voiceclient::on_message, this, &c, ::_1, ::_2));
-                //c.set_close_handler(bind(&voiceclient::on_close, this, &c, ::_1);
+                c.set_close_handler(bind(&voiceclient::on_close, this, &c, ::_1));
                 // while (1) {
                 //c.reset();
+                c.start_perpetual();
             }
             catch (websocketpp::exception const& e) {
                 std::cout << e.what() << std::endl;
@@ -968,24 +1079,9 @@ public:
     };
     class gatewayclient {
     public:
-        std::unordered_map<std::string, std::queue<std::string>*> mainqueue;
-        //link userID with a struct contain queue data of that user
-        std::unordered_map<std::string, querryqueue*> queuemap;
-        //Variable zone
-
-        /* Querry selection queue
-        *  Element:
-        *  0: User ID
-        *  1: Guild ID
-        *  2: Channel ID
-        *  3-7: video ID
-        */ 
-        
-        voiceclient voice;
-        std::string session = "";
-        std::string _token = "";
-        std::string guildid = "";
-        std::string endpoint = "";
+        std::unordered_map<std::string, std::unordered_map<std::string, querryqueue*>> mainqueue; //[guild_id][user_id] -> querrydata
+        std::unordered_map<std::string, voiceclient*> voicegroup;  // guild id ~~ voice endpoint
+        std::unordered_map<std::string, std::unordered_map<std::string, userinfo*>> usergroup;  //[guild_id][user_id]->userinfor*
         int heartbeat_interval = 50;
         int seq_num = 0;
         bool is_websocket_restart = false;
@@ -1103,7 +1199,7 @@ public:
                             std::cout << "Heartbeat failed because: " << ec.message() << std::endl;
                         }
                     }
-                }, this_is_token);
+                });
         }
 
         concurrency::task<void> on_message(client* c, websocketpp::connection_hdl hdl, message_ptr msg) {
@@ -1130,30 +1226,6 @@ public:
                 }
 
                 switch (opcode) {
-                /*case -1:
-                    std::cout << "Voice state update received \n";
-                    _token = js_msg["token"];
-                    guildid = js_msg["guild_id"];
-                    endpoint = js_msg["endpoint"];
-                    int i = 1;
-                    while (session == "") {
-                        std::string out = "Waiting for session id" + std::to_string(i) + "\n";
-                        std::cout << out;
-                        utils::sleep(1000);
-                        i++;
-                        if (i > 5) {
-                            break;
-                        }
-                        voice.start(endpoint, guildid, _token, session);
-                    }
-                    if (i > 5) {
-                        std::cout << "Fail to wait for session id\n";
-                        break;
-                    }
-                    else {
-
-                    }
-                    break;*/
                 case 9: //invalid session
                     //just restart
                     **s_is_restart = false;
@@ -1203,30 +1275,39 @@ public:
                         std::cout << "Can not parse discord event from message:" << msg->get_payload() << std::endl;
                     }
 
-                    //if (event == R"(VOICE_STATE_UPDATE)") {
-                    //    json ready = **s_ready;
-                    //    if (js_msg["d"]["user_id"] == ready["d"]["user"]["id"]) {
-                    //        //voice::session = js_msg["d"]["session_id"];
-                    //    }
-                    //}
                     if (event == R"(READY)") { //receive ready packet 
                         **s_ready = js_msg; //cache ready data
                         break;
                     }
-                    if (event == R"(VOICE_STATE_UPDATE)") {
-                        if (utils::isSelf(js_msg, **s_ready)) {
-                            //indicate that we started a voice connection
-                            if (js_msg["d"]["session_id"].is_string()) {
-                                this->session = js_msg["d"]["session_id"];
-                                std::cout << "Successful get session id: " << session << std::endl;
-                            }
-                            else {
-                                std::cout << "Can not parse session id\n";
+                    if (event == R"(VOICE_STATE_UPDATE)") { //VOICE STATE UPDATE EVENT
+                        //if (utils::isSelf(js_msg, **s_ready)) 
+                        std::string userid = "";
+                        if (js_msg["d"]["user_id"].is_string()) {
+                            userid = js_msg["d"]["user_id"];
+                        }
+                        else std::cout << "Can not parse userid from message: " << msg->get_payload() << std::endl;
+                        std::string guild = "";
+                        if (js_msg["d"]["guild_id"].is_string()) {
+                            guild = js_msg["d"]["guild_id"];
+                        }
+                        else std::cout << "Can not parse guild id from message:" << msg->get_payload() << std::endl;
+                        std::string channel = "";
+                        if (js_msg["d"]["channel_id"].is_string()) {
+                            channel = js_msg["d"]["channel_id"].is_string();
+                        }
+                        if (userid == ready["d"]["user"]["id"] && channel == "") { //disconnect packet
+                            if (voicegroup.find(guild) != voicegroup.end()) { //endpoint exist
+                                voicegroup[guild]->cleanup();
                             }
                         }
+                        usergroup[guild][userid] = new userinfo;
+                        usergroup[guild][userid]->update(js_msg);
                         break;
                     }
                     if (event == R"(VOICE_SERVER_UPDATE)") {
+                        std::string _token = "";
+                        std::string guildid = "";
+                        std::string endpoint = "";
                         if (js_msg["d"]["token"].is_string() && js_msg["d"]["guild_id"].is_string() && js_msg["d"]["endpoint"].is_string()) {
                             _token = js_msg["d"]["token"];
                             guildid = js_msg["d"]["guild_id"];
@@ -1237,12 +1318,27 @@ public:
                         }
                         else {
                             std::cout << "Can not parse: token, guild id, endpoint \n";
+                            break;
                         }
                         int i = 1;
-                        while (session == "") {
+                        std::string selfid = ready["d"]["user"]["id"];                  
+                        while (1) {
                             std::string out = "Waiting for session id " + std::to_string(i) + "\n";
                             std::cout << out;
+                            if (usergroup.find(guildid) == usergroup.end()) { 
+                            }
+                            else {
+                                if (usergroup[guildid].find(selfid) == usergroup[guildid].end()) {
+                                }
+                                else {
+                                    if (usergroup[guildid][selfid]->sessionid != "") {
+                                        std::cout << "Found valid session id: " << usergroup[guildid][selfid]->sessionid << std::endl;
+                                        break;
+                                    }
+                                }
+                            }
                             utils::sleep(1000);
+
                             i++;
                             if (i > 5) {
                                 break;
@@ -1253,31 +1349,38 @@ public:
                             break;
                         }
                         else {
-                            voice.start(endpoint, guildid, _token, session, ready["d"]["user"]["id"]);
+                            if (voicegroup.find(guildid) == voicegroup.end()) { //not exist
+                                std::cout << "Start voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid;
+                                voicegroup[guildid] = new voiceclient;
+                                voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][selfid]->sessionid, selfid);
+                            }
+                            else { //exist
+                                //stop old connection and start a new connection
+                                voicegroup[guildid]->cleanup();
+                                voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, ready["d"]["user"]["id"]);
+                            }
                         }
                         break;
-                    }
+                    }               
 
-                    if (event == R"(MESSAGE_CREATE)") { //New command
-                        std::string channel = "";
+                    if (event == R"(MESSAGE_CREATE)") { //MSG CREATE EVENT
+                        std::string channel = ""; //CHANNEL ID
                         if (js_msg["d"]["channel_id"].is_string()) {
                             channel = js_msg["d"]["channel_id"];
                         }
                         else {
                             std::cout << "Can not parse channel id from message:" << msg->get_payload() << std::endl;
-                            //channel = "";
                         }
 
-                        std::string guild = "";
+                        std::string guild = ""; //GUILD ID
                         if (js_msg["d"]["guild_id"].is_string()) {
                             guild = js_msg["d"]["guild_id"];
                         }
                         else {
                             std::cout << "Can not parse guild id from message:" << msg->get_payload() << std::endl;
-                            //channel = "";
                         }
 
-                        std::string content = "";
+                        std::string content = ""; //MSG CONTENT
                         if (js_msg["d"]["content"].is_string()) {
                             content = js_msg["d"]["content"];
                         }
@@ -1285,7 +1388,7 @@ public:
                             std::cout << "Can not parse content from message:" << msg->get_payload() << std::endl;
                         }
 
-                        std::string userid = "";
+                        std::string userid = ""; //AUTHOR ID
                         if (js_msg["d"]["author"]["id"].is_string()) {
                             userid = js_msg["d"]["author"]["id"];
                         }
@@ -1297,7 +1400,7 @@ public:
                             std::cout << (**s_ready)["d"]["user"]["id"] << std::endl;
                             break;
                         }
-                        if (content == "ping" || content == "Ping") {
+                        if (content == "ping" || content == "Ping") { //ping command
                             int RTT = utils::ping("162.159.136.232"); //discord IP: 162.159.136.232
                             std::cout << "RTT: " << std::to_string(RTT) << std::endl;
                             std::string msg = "Pong! ";
@@ -1306,11 +1409,11 @@ public:
                             utils::sendMsg(msg, channel);
                             break;
                         }
-                        if (content == "Hello" || content == "hello") {
+                        if (content == "Hello" || content == "hello") { //Hello
                             utils::sendMsg("Hi!", channel);
                             break;
                         }
-                        if (content == "restart" || content == "Restart") {
+                        if (content == "restart" || content == "Restart") { //restart command
                             if (utils::isOwner(js_msg)) {
                                 utils::sendMsg("Restarting...", channel);
                                 **s_is_restart = true;
@@ -1321,157 +1424,147 @@ public:
                             }
                             break;
                         }
-                        if (content == "1") {
-                            if (queuemap.find(userid) == queuemap.end()) { //Not found key in database
-                                break;
-                            }
-                            else {
-                                querryqueue* temp = queuemap[userid];
-                                if (temp->is_avaiable()) { //Ye object has data
-                                    if (temp->channelid == channel && temp->guildid == guild) { //channel and guild match + userid match -> match
-                                        if (mainqueue.find(userid) == mainqueue.end()) {//not found key, create pair
-                                            mainqueue[userid] = new std::queue<std::string>;
-                                            mainqueue[userid]->push(temp->data[0]);
-                                            std::cout << "Queued video id: " << temp->data[0] << std::endl;
-                                            temp->reset();
-                                        }
-                                        else { //found pair
-                                            mainqueue[userid]->push(temp->data[0]);
-                                            std::cout << "Queued video id: " << temp->data[0] << std::endl;
-                                            temp->reset();
+                        if (content == "?join") { //join command
+                            if (usergroup.find(guild) != usergroup.end()) {
+                                if (usergroup[guild].find(userid) != usergroup[guild].end()) {
+                                    if (usergroup[guild][userid]->get_voice_channel_id() != "") {
+                                        websocketpp::lib::error_code ec;
+                                        c->send(hdl, getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
+                                        if (ec) {
+                                            std::cout << "Can not send voice state update payload because: " << ec.message();
+                                            break;
                                         }
                                     }
+                                    else {
+                                        std::string payload = "You are not in voice channel!";
+                                        utils::sendMsg(payload, channel);
+                                    }
+                                }
+                                else {
+                                    std::string payload = "```Internal error, please rejoin voice channel```";
+                                    utils::sendMsg(payload, channel);
                                 }
                             }
-                            websocketpp::lib::error_code ec;
-                            std::cout << "Establish voice connection to channel id: 633233029208473601";
-                            c->send(hdl, getVoiceStateUpdatePayload(guild, "633233029208473601"), websocketpp::frame::opcode::text, ec);
-                            concurrency::create_task([this] {
-                                while (!voice.isReady()) {
-                                    utils::sleep(1000);
+                            else {
+                                std::string payload = "```Internal error, please rejoin voice channel```";
+                                utils::sendMsg(payload, channel);
+                            }
+                        }
+
+                        if (content == "?leave") {
+                            if (voicegroup.find(guild) == voicegroup.end()) {
+                                std::string payload = "Not currently in any voice channel";
+                                utils::sendMsg(payload, channel);
+                                break;
+                            }
+                            else if (voicegroup[guild]->connect == false) {
+                                break;
+                            } else {
+                                voicegroup[guild]->cleanup();
+                                /*while (voicegroup[guild]->connect == true) {
+                                    std::cout << "Waiting for connection close\n";
+                                    utils::sleep(100);
+                                }*/
+                                if (voicegroup[guild]->connect == false) {
+                                    websocketpp::lib::error_code ec;
+                                    std::string payload = getVoiceStateUpdatePayload(guild, "null");
+                                    c->send(hdl, payload, websocketpp::frame::opcode::text);
+                                    if (ec) {
+                                        std::cout << "Cannot send voice update payload because: " << ec.message() << std::endl;
+                                        break;
+                                    }
+                                    payload = "Okela";
+                                    utils::sendMsg(payload, channel);
                                 }
-                                voice.play(R"(D:\Download\pytube-d282c0aaf4f10f1d1c4ca2eb6157980c31671f52\pytube\b.mp4)");
-                                });
+                            }
                             break;
                         }
-                        if (content == "2") {
-                            if (queuemap.find(userid) == queuemap.end()) { //Not found key in database
+
+                        if (content == "1" || content == "2" || content == "3" || content == "4" || content == "5") {
+                            int selected = std::stoi(content);
+                            if (mainqueue.find(guild) == mainqueue.end()) { //Not found key in database
+                                break;
+                            }
+                            else if (mainqueue[guild].find(userid) == mainqueue[guild].end()) { // Not found key in database
                                 break;
                             }
                             else {
-                                querryqueue* temp = queuemap[userid];
+                                querryqueue* temp = mainqueue[guild][userid];
                                 if (temp->is_avaiable()) { //Ye object has data
                                     if (temp->channelid == channel && temp->guildid == guild) { //channel and guild match + userid match -> match
-                                        if (mainqueue.find(userid) == mainqueue.end()) {//not found key, create pair
-                                            mainqueue[userid] = new std::queue<std::string>;
-                                            mainqueue[userid]->push(temp->data[1]);
-                                            temp->reset();
+                                        if (voicegroup.find(guild) == voicegroup.end()) { //voice endpoint not exist
+                                            break;
+                                            std::cout << "Endpoint for guild id " << guild << " not exist\n";
                                         }
                                         else {
-                                            mainqueue[userid]->push(temp->data[1]);
-                                            temp->reset();
+                                            if (usergroup.find(guild) != usergroup.end()) {
+                                                if (usergroup[guild].find(userid) != usergroup[guild].end()) {
+                                                    if (usergroup[guild][userid]->get_voice_channel_id() != "") {
+                                                        voicegroup[guild]->selfqueue.push(temp->data[selected-1]);
+                                                        std::cout << "User " << userid << " selected video " << temp->data[selected - 1] << std::endl;
+                                                        websocketpp::lib::error_code ec;
+                                                        c->send(hdl, getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
+                                                        if (ec) {
+                                                            std::cout << "can not send voice state update payload because: " << ec.message();
+                                                        }
+                                                    }
+                                                    else {
+                                                        std::string payload = "You are not in voice channel!";
+                                                        utils::sendMsg(payload, channel);
+                                                    }
+                                                }
+                                                else {
+                                                    std::string payload = "```Internal error, please rejoin voice channel```";
+                                                    utils::sendMsg(payload, channel);
+                                                }
+                                            }
+                                            else {
+                                                std::string payload = "```Internal error, please rejoin voice channel```";
+                                                utils::sendMsg(payload, channel);
+                                            }
+                                            mainqueue[guild][userid]->reset();
                                         }
                                     }
+                                    else break;
                                 }
-                                break;
+                                else break;
                             }
+                            break;
                         }
-                        if (content == "3") {
-                            if (queuemap.find(userid) == queuemap.end()) { //Not found key in database
-                                break;
-                            }
-                            else {
-                                querryqueue* temp = queuemap[userid];
-                                if (temp->is_avaiable()) { //Ye object has data
-                                    if (temp->channelid == channel && temp->guildid == guild) { //channel and guild match + userid match -> match
-                                        if (mainqueue.find(userid) == mainqueue.end()) {//not found key, create pair
-                                            mainqueue[userid] = new std::queue<std::string>;
-                                            mainqueue[userid]->push(temp->data[2]);
-                                            temp->reset();
-                                        }
-                                        else {
-                                            mainqueue[userid]->push(temp->data[2]);
-                                            temp->reset();
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                        if (content == "4") {
-                            if (queuemap.find(userid) == queuemap.end()) { //Not found key in database
-                                break;
-                            }
-                            else {
-                                querryqueue* temp = queuemap[userid];
-                                if (temp->is_avaiable()) { //Ye object has data
-                                    if (temp->channelid == channel && temp->guildid == guild) { //channel and guild match + userid match -> match
-                                        if (mainqueue.find(userid) == mainqueue.end()) {//not found key, create pair
-                                            mainqueue[userid] = new std::queue<std::string>;
-                                            mainqueue[userid]->push(temp->data[3]);
-                                            temp->reset();
-                                        }
-                                        else {
-                                            mainqueue[userid]->push(temp->data[3]);
-                                            temp->reset();
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                        if (content == "5") {
-                            if (queuemap.find(userid) == queuemap.end()) { //Not found key in database
-                                break;
-                            }
-                            else {
-                                querryqueue* temp = queuemap[userid];
-                                if (temp->is_avaiable()) { //Ye object has data
-                                    if (temp->channelid == channel && temp->guildid == guild) { //channel and guild match + userid match -> match
-                                        if (mainqueue.find(userid) == mainqueue.end()) {//not found key, create pair
-                                            mainqueue[userid] = new std::queue<std::string>;
-                                            mainqueue[userid]->push(temp->data[4]);
-                                            temp->reset();
-                                        }
-                                        else {
-                                            mainqueue[userid]->push(temp->data[4]);
-                                            temp->reset();
-                                        }
-                                    }
-                                }
-                                break;
-                            }
-                        }
+
                         if (utils::isStartWith(content, "?p")) {
                             //parse string
+                            if (voicegroup.find(guild) == voicegroup.end()) {
+                                std::cout << "Create voice endpoint for guild: " << guild << std::endl;
+                                voicegroup[guild] = new voiceclient;
+                            }
+                            else std::cout << "Voice endpoint already exist\n";
                             std::string querry = content.erase(0, 3);
                             if (querry == "") {
                                 utils::sendMsg("Please provide paramenter", channel);
                             }
                             else {
                                 //sendMsg(querry, channel);
-                                json result = utils::youtubePerformQuerry(querry, true);
+                                json result = utils::youtubePerformQuerry(querry);
                                 std::cout << "Querry result for keyword: " << querry << std::endl;
-                                std::cout << result.dump() << std::endl;
-                                utils::youtubePrintSearchResult(result, querry, channel, true);
-                                if (queuemap.find(userid) == queuemap.end()) { //Not found key in database
-                                    //insert new key
-                                    queuemap[userid] = new querryqueue;
-                                    queuemap[userid]->push(js_msg, result);
-                                }
-                                else {
-                                    queuemap[userid]->push(js_msg, result); //already has pair, perform querryqueue.push()
-                                }
+                                //std::cout << result.dump() << std::endl;
+                                utils::youtubePrintSearchResult(result, querry, channel);
+                                mainqueue[guild][userid] = new querryqueue;
+                                mainqueue[guild][userid]->push(js_msg, result);
                                 std::cout << "Cached search querry\n";
                             }
                             break;
                         }
 
-                        std::string value="";
+                        std::string value = "";
                         if (utils::parse(&value, "frameinterval", content)) {
-                            std::string num="";
+                            if (voicegroup.find(guild) == voicegroup.end()) {
+                                utils::sendMsg("You must play music at lease 1 time to be able to config.", channel);
+                                break;
+                            }
+                            std::string num = "";
                             if (value == "?") {
-                                std::string payload = "Current frame interval: " + std::to_string(voice.FrameInterval);
+                                std::string payload = "Current frame interval: " + std::to_string(voicegroup[guild]->FrameInterval);
                                 utils::sendMsg(payload, channel);
                                 break;
                             }
@@ -1487,14 +1580,74 @@ public:
                                 break;
                             }
                             websocketpp::lib::error_code ec;
-                            std::string payload = "Changed frame interval to " + std::to_string((unsigned short)stoi(value)) + ". Old value: " + std::to_string(voice.FrameInterval);
-                            voice.FrameInterval = (unsigned short)stoi(value);
+                            std::string payload = "Changed frame interval to " + std::to_string((unsigned short)stoi(value)) + ". Old value: " + std::to_string(voicegroup[guild]->FrameInterval);
+                            voicegroup[guild]->FrameInterval = (unsigned short)stoi(value);
+                            utils::sendMsg(payload, channel);
+                            break;
+                        }
+
+                        value = "";
+                        if (utils::parse(&value, "offset", content)) {
+                            if (voicegroup.find(guild) == voicegroup.end()) {
+                                utils::sendMsg("You must play music at lease 1 time to be able to config.", channel);
+                                break;
+                            }
+                            std::string num = "";
+                            if (value == "?") {
+                                std::string payload = "Current offset: " + std::to_string(voicegroup[guild]->offset);
+                                utils::sendMsg(payload, channel);
+                                break;
+                            }
+                            for (int i = 0; i < value.length(); i++) {
+                                if (48 <= value[i] && value[i] <= 57) {
+                                    num += value[i];
+                                }
+                                else break;
+                            }
+                            if (num == "") {
+                                std::string payload = "Paramenter must be an interger, for real!";
+                                utils::sendMsg(payload, channel);
+                                break;
+                            }
+                            websocketpp::lib::error_code ec;
+                            std::string payload = "Changed offset to " + std::to_string((unsigned short)stoi(value)) + ". Old value: " + std::to_string(voicegroup[guild]->offset);
+                            voicegroup[guild]->offset = (unsigned short)stoi(value);
+                            utils::sendMsg(payload, channel);
+                            break;
+                        }
+
+                        value = "";
+                        if (utils::parse(&value, "Offset", content)) {
+                            if (voicegroup.find(guild) == voicegroup.end()) {
+                                utils::sendMsg("You must play music at lease 1 time to be able to config.", channel);
+                                break;
+                            }
+                            std::string num = "";
+                            if (value == "?") {
+                                std::string payload = "Current offset: " + std::to_string(voicegroup[guild]->offset);
+                                utils::sendMsg(payload, channel);
+                                break;
+                            }
+                            for (int i = 0; i < value.length(); i++) {
+                                if (48 <= value[i] && value[i] <= 57) {
+                                    num += value[i];
+                                }
+                                else break;
+                            }
+                            if (num == "") {
+                                std::string payload = "Paramenter must be an interger, for real!";
+                                utils::sendMsg(payload, channel);
+                                break;
+                            }
+                            websocketpp::lib::error_code ec;
+                            std::string payload = "Changed offset to " + std::to_string((unsigned short)stoi(value)) + ". Old value: " + std::to_string(voicegroup[guild]->offset);
+                            voicegroup[guild]->offset = (unsigned short)stoi(value);
                             utils::sendMsg(payload, channel);
                             break;
                         }
                     }
                 }
-            });
+                });
         }
 
         std::string getVoiceStateUpdatePayload(std::string guild, std::string channel) {
@@ -1511,9 +1664,16 @@ public:
             */
             std::string payload = R"({"op": 4,"d": {"guild_id": ")";
             payload += guild;
-            payload += R"(","channel_id": ")";
-            payload += channel;
-            payload += R"(","self_mute": false,"self_deaf": true}})";
+            if (channel == "null") {
+                payload += R"(","channel_id": )";
+                payload += channel;
+                payload += R"(,"self_mute": false,"self_deaf": true}})";
+            }
+            else {
+                payload += R"(","channel_id": ")";
+                payload += channel;
+                payload += R"(","self_mute": false,"self_deaf": true}})";
+            }
             return payload;
         }
 
@@ -1534,7 +1694,7 @@ public:
 
         gatewayclient() {
             client c;
-            std::string uri = "wss://gateway.discord.gg/?v=8&encoding=json";
+            std::string uri = R"(wss://gateway.discord.gg/?v=8&encoding=json)";
             try {
                 // Set logging to be pretty verbose (everything except message payloads)
                 c.set_access_channels(websocketpp::log::alevel::all);
@@ -1568,10 +1728,9 @@ public:
         }
     };
 };
-    
+
 int main() {
     SetConsoleOutputCP(CP_UTF8);
     discordbot::gatewayclient gw; //blocking call
     std::cout << "this is a test \n";
-
 }

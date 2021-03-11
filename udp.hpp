@@ -52,6 +52,16 @@ namespace udp {
 			WSACleanup();
 		}
 		
+		void cleanup() {
+			closesocket(s);
+			WSACleanup();
+		}
+		void renew(int serverPORT, std::string serverIP) {
+			closesocket(s);
+			WSACleanup();
+			start(serverPORT,serverIP);
+		}
+
 		void setssrc(int ssrc) {
 			this->ssrc = ssrc;
 			std::cout << "Get ssrc: " << ssrc << std::endl;
@@ -105,20 +115,24 @@ namespace udp {
 		}
 
 		//send char array to target
-		void send(char* message) {
+		int send(char* message) {
 			if (sendto(s, message, strlen(message), 0, (struct sockaddr*)&si_other, slen) == SOCKET_ERROR)
 			{
 				printf("sendto() failed with error code : %d", WSAGetLastError());
 				//exit(EXIT_FAILURE);
+				return WSAGetLastError();
 			}
+			return 0;
 		}
 
-		void send(std::string message) {
+		int send(std::string message) {
 			if (sendto(s, message.c_str(), message.length(), 0, (struct sockaddr*)&si_other, slen) == SOCKET_ERROR)
 			{
 				printf("sendto() failed with error code : %d", WSAGetLastError());
 				//exit(EXIT_FAILURE);
+				return WSAGetLastError();
 			}
+			return 0;
 		}
 		
 		std::string clientip() {
