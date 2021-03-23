@@ -262,7 +262,7 @@ namespace discordbot {
             websocketpp::lib::error_code ec;
             c.send(hdl, payload, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::cout << "Can not send unspeak message";
+                std::cout << "Can not send unspeak message because: " << ec.message() << std::endl;
             }
             utils::sleep(1000);
             return;
@@ -419,6 +419,42 @@ namespace discordbot {
         void on_close(client* c, websocketpp::connection_hdl hdl) {
             c->get_alog().write(websocketpp::log::alevel::app, "<Voiceclient> Connection Closed");
             std::cout << "<Voiceclient> Connection closed on hdl: " << hdl.lock().get() << std::endl;
+            std::cout << "Connection close, performing cleanup\n";
+            state = false; //lock pusher
+            endpoint = "";
+            guildid = "";
+            _token = "";
+            session = "";
+            user_id = "";
+            key.clear();
+
+            cts.cancel();
+            if (connect) {
+                std::cout << "Waiting for heartbeat thread to exit\n";
+                t.wait();
+            }
+
+
+            if (running) {
+                std::string str = "Stop player\n";
+                std::cout << str;
+                p_cts.cancel();
+                playing.wait();
+                p_cts = concurrency::cancellation_token_source();
+                p_token = p_cts.get_token();
+            }
+            else {
+                std::string str = "Player is not running\n";
+                std::cout << str;
+            }
+
+            std::cout << "Close udp socket\n";
+            udpclient.cleanup();
+            //pusher.wait();
+
+            //reset token
+            cts = concurrency::cancellation_token_source();
+            token = cts.get_token();
             connect = false;
         }
 
@@ -450,7 +486,7 @@ namespace discordbot {
 
         //cancel all operation
         void cleanup() {
-            if (connect) {
+            if (0) {
                 std::cout << "Connection close, performing cleanup\n";
                 state = false; //lock pusher
                 endpoint = "";
