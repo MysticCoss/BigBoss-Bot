@@ -74,7 +74,7 @@
     <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
-    <LinkIncremental>false</LinkIncremental>
+    <LinkIncremental>true</LinkIncremental>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <LinkIncremental>true</LinkIncremental>
@@ -88,13 +88,14 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Program Files %28x86%29\OpenSSL\include;D:\Computer Vault\Code\boost_1_75_0;D:\Computer Vault\Code\websocketpp-master\websocketpp;D:\Computer Vault\Code\MultipleConsoles_src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Program Files %28x86%29\OpenSSL\include;D:\Computer Vault\Code\boost_1_75_0;D:\Computer Vault\Code\websocketpp-master\websocketpp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>D:\Computer Vault\Code\boost_1_75_0\stage\lib;D:\Computer Vault\Code\curl-master\builds\libcurl-vc-x86-debug-static-ssl-static-zlib-static-ipv6-sspi\lib;C:\Program Files %28x86%29\OpenSSL\lib\engines-1_1;C:\Program Files %28x86%29\OpenSSL\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>iphlpapi.lib;Normaliz.lib;Ws2_32.lib;Wldap32.lib;Crypt32.lib;advapi32.lib;libboost_context-vc142-mt-gd-x32-1_75.lib;libboost_atomic-vc142-mt-gd-x32-1_75.lib;libboost_container-vc142-mt-gd-x32-1_75.lib;libboost_contract-vc142-mt-gd-x32-1_75.lib;libboost_coroutine-vc142-mt-gd-x32-1_75.lib;libboost_chrono-vc142-mt-gd-x32-1_75.lib;libboost_date_time-vc142-mt-gd-x32-1_75.lib;libboost_exception-vc142-mt-gd-x32-1_75.lib;libboost_fiber-vc142-mt-gd-x32-1_75.lib;libboost_filesystem-vc142-mt-gd-x32-1_75.lib;libboost_graph-vc142-mt-gd-x32-1_75.lib;libboost_iostreams-vc142-mt-gd-x32-1_75.lib;libboost_json-vc142-mt-gd-x32-1_75.lib;libboost_locale-vc142-mt-gd-x32-1_75.lib;libboost_log_setup-vc142-mt-gd-x32-1_75.lib;libboost_log-vc142-mt-gd-x32-1_75.lib;libboost_math_c99f-vc142-mt-gd-x32-1_75.lib;libboost_math_c99l-vc142-mt-gd-x32-1_75.lib;libboost_math_c99-vc142-mt-gd-x32-1_75.lib;libboost_math_tr1f-vc142-mt-gd-x32-1_75.lib;libboost_math_tr1l-vc142-mt-gd-x32-1_75.lib;libboost_math_tr1-vc142-mt-gd-x32-1_75.lib;libboost_nowide-vc142-mt-gd-x32-1_75.lib;libboost_numpy37-vc142-mt-gd-x32-1_75.lib;libboost_prg_exec_monitor-vc142-mt-gd-x32-1_75.lib;libboost_program_options-vc142-mt-gd-x32-1_75.lib;libcrypto.lib;libssl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <Profile>true</Profile>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -105,7 +106,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>C:\Program Files %28x86%29\OpenSSL\include;D:\Computer Vault\Code\boost_1_75_0;D:\Computer Vault\Code\websocketpp-master\websocketpp;D:\Computer Vault\Code\MultipleConsoles_src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Program Files %28x86%29\OpenSSL\include;D:\Computer Vault\Code\boost_1_75_0;D:\Computer Vault\Code\websocketpp-master\websocketpp;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -114,7 +115,7 @@
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>D:\Computer Vault\Code\boost_1_75_0\stage\lib;C:\Program Files %28x86%29\OpenSSL\lib\engines-1_1;C:\Program Files %28x86%29\OpenSSL\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>libboost_context-vc142-mt-gd-x32-1_75.lib;libboost_atomic-vc142-mt-gd-x32-1_75.lib;libboost_container-vc142-mt-gd-x32-1_75.lib;libboost_contract-vc142-mt-gd-x32-1_75.lib;libboost_coroutine-vc142-mt-gd-x32-1_75.lib;libboost_chrono-vc142-mt-gd-x32-1_75.lib;libboost_date_time-vc142-mt-gd-x32-1_75.lib;libboost_exception-vc142-mt-gd-x32-1_75.lib;libboost_fiber-vc142-mt-gd-x32-1_75.lib;libboost_filesystem-vc142-mt-gd-x32-1_75.lib;libboost_graph-vc142-mt-gd-x32-1_75.lib;libboost_iostreams-vc142-mt-gd-x32-1_75.lib;libboost_json-vc142-mt-gd-x32-1_75.lib;libboost_locale-vc142-mt-gd-x32-1_75.lib;libboost_log_setup-vc142-mt-gd-x32-1_75.lib;libboost_log-vc142-mt-gd-x32-1_75.lib;libboost_math_c99f-vc142-mt-gd-x32-1_75.lib;libboost_math_c99l-vc142-mt-gd-x32-1_75.lib;libboost_math_c99-vc142-mt-gd-x32-1_75.lib;libboost_math_tr1f-vc142-mt-gd-x32-1_75.lib;libboost_math_tr1l-vc142-mt-gd-x32-1_75.lib;libboost_math_tr1-vc142-mt-gd-x32-1_75.lib;libboost_nowide-vc142-mt-gd-x32-1_75.lib;libboost_numpy37-vc142-mt-gd-x32-1_75.lib;libboost_prg_exec_monitor-vc142-mt-gd-x32-1_75.lib;libboost_program_options-vc142-mt-gd-x32-1_75.lib;libcrypto.lib;libssl.lib;%(AdditionalDependencies);kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib</AdditionalDependencies>
+      <AdditionalDependencies>iphlpapi.lib;Normaliz.lib;Ws2_32.lib;Wldap32.lib;Crypt32.lib;advapi32.lib;libboost_context-vc142-mt-x32-1_75.lib;libboost_atomic-vc142-mt-x32-1_75.lib;libboost_container-vc142-mt-x32-1_75.lib;libboost_contract-vc142-mt-x32-1_75.lib;libboost_coroutine-vc142-mt-x32-1_75.lib;libboost_chrono-vc142-mt-x32-1_75.lib;libboost_date_time-vc142-mt-x32-1_75.lib;libboost_exception-vc142-mt-x32-1_75.lib;libboost_fiber-vc142-mt-x32-1_75.lib;libboost_filesystem-vc142-mt-x32-1_75.lib;libboost_graph-vc142-mt-x32-1_75.lib;libboost_iostreams-vc142-mt-x32-1_75.lib;libboost_json-vc142-mt-x32-1_75.lib;libboost_locale-vc142-mt-x32-1_75.lib;libboost_log_setup-vc142-mt-x32-1_75.lib;libboost_log-vc142-mt-x32-1_75.lib;libboost_math_c99f-vc142-mt-x32-1_75.lib;libboost_math_c99l-vc142-mt-x32-1_75.lib;libboost_math_c99-vc142-mt-x32-1_75.lib;libboost_math_tr1f-vc142-mt-x32-1_75.lib;libboost_math_tr1l-vc142-mt-x32-1_75.lib;libboost_math_tr1-vc142-mt-x32-1_75.lib;libboost_nowide-vc142-mt-x32-1_75.lib;libboost_numpy37-vc142-mt-x32-1_75.lib;libboost_prg_exec_monitor-vc142-mt-x32-1_75.lib;libboost_program_options-vc142-mt-x32-1_75.lib;libcrypto.lib;libssl.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -127,6 +128,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <Profile>true</Profile>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -150,7 +152,9 @@
     <ClCompile Include="Websocket.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="embed.hpp" />
     <ClInclude Include="udp.h" />
+    <ClInclude Include="utils.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

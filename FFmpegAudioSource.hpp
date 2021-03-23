@@ -14,7 +14,7 @@ public:
 		//get raw audio stream using ffmpeg (s16le format)
 		std::string path = R"(C:\Users\Admin\source\repos\Websocket)";
 		std::string input = path + "\\" + id + ".webm";
-		command = "ffmpeg " + before_options + " -i \"" + input + "\" " + options + " -loglevel warning -f s16le -ac 2 -ar 48000 pipe:1";
+		command = "ffmpeg " + before_options + " -i \"" + input + "\" " + options + " -loglevel quiet -f s16le -ac 2 -ar 48000 pipe:1";
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
 		std::cout << "Calling subprocess with command: " << command << std::endl;
 		_pipe = std::make_shared<boost::process::ipstream>(boost::process::ipstream());

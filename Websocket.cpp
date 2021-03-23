@@ -1,4 +1,5 @@
-﻿#include "websocketpp/config/asio_client.hpp"
+﻿#pragma once
+#include "websocketpp/config/asio_client.hpp"
 #include "websocketpp/client.hpp"
 #include <nlohmann/json.hpp>
 #include "curl/curl.h"
@@ -16,12 +17,16 @@
 #include <regex>
 #include <boost/process.hpp>
 #include "udp.hpp"
-#include "ConsoleLogger.h"
 #include <sodium.h>
-//#include "AudioSource.hpp"
+#include <concrt.h>
+#include <boost/chrono.hpp>
+#include <windows.h>
+#include <math.h>
 #include "FFmpegAudioSource.hpp"
-//#include "FileAudioSource.hpp"
 #include <opus/opus.h>
+#include "utils.hpp"
+#include "embed.hpp"
+boost::asio::io_context context_io;
 typedef websocketpp::client<websocketpp::config::asio_tls_client> client;
 typedef std::shared_ptr<boost::asio::ssl::context> context_ptr;
 using websocketpp::lib::placeholders::_1;
@@ -98,371 +103,14 @@ struct userinfo {
     }
 };
 
-class discordbot {
-public:
-    class utils {
-    public:
-        struct payload {
-            payload() {
-                memory = NULL;
-                size = 0;
-            }
-            char* memory;
-            size_t size;
-        };
-        /*
-        if (utils::isStartWith(content, "?p")) {
-                            //parse string
-                            std::string querry = content.erase(0, 3);
-                            if (querry == "") {
-                                utils::sendMsg("Please provide paramenter", channel);
-                            }
-                            else {
-                                //sendMsg(querry, channel);
-                                json result = utils::youtubePerformQuerry(querry, true);
-                                std::cout << "Querry result for keyword: " << querry << std::endl;
-                                std::cout << result.dump() << std::endl;
-                                utils::youtubePrintSearchResult(result, querry, channel, true);
-                                if (queuemap.find(userid) == queuemap.end()) { //Not found key in database
-                                    //insert new key
-                                    queuemap[userid] = new querryqueue;
-                                    queuemap[userid]->push(js_msg, result);
-                                }
-                                else {
-                                    queuemap[userid]->push(js_msg, result); //already has pair, perform querryqueue.push()
-                                }
-                                std::cout << "Cached search querry\n";
-                            }
-                            break;
-                        }*/
-        static bool parse(std::string* output, std::string param, std::string msg) {
-            if (isStartWith(msg, param)) {
-                std::string result = msg.erase(0, param.length() + 1); //delete param from content, including space
-                if (result == "") { //validate result
-                    return false;
-                }
-                else {
-                    *output = result;
-                    return true;
-                }
-            }
-            else return false;
-        }
-
-        static size_t write_data(void* contents, size_t size, size_t nmemb, void* userp)
-        {
-            size_t realsize = size * nmemb;
-            struct payload* mem = (struct payload*)userp;
-
-            char* ptr = (char*)realloc(mem->memory, mem->size + realsize + 1);
-            if (ptr == NULL) {
-                /* out of memory! */
-                printf("not enough memory (realloc returned NULL)\n");
-                return 0;
-            }
-
-            mem->memory = ptr;
-            memcpy(&(mem->memory[mem->size]), contents, realsize);
-            mem->size += realsize;
-            mem->memory[mem->size] = 0;
-
-            return realsize;
-        }
-
-        static std::string utf8_url_encode(const std::string& value) {
-            std::ostringstream out;
-            for (int i = 0; i < value.length(); ++i) {
-                out << '%' << std::hex << std::uppercase << (int)(unsigned char)value[i];
-            }
-            return out.str();
-        }
-
-        static std::string utf8_url_decode(const std::string& value) {
-            std::ostringstream out;
-            for (int i = 0; i < value.length(); i++) {
-                if (value[i] == '%') {
-                    std::ostringstream hex;
-                    hex << value[i + 1] << value[i + 2];
-                    //std::cout << hex.str() << std::endl;
-                    out << (unsigned char)stoi(hex.str(), 0, 16);
-                    i += 2;
-                }
-                else {
-                    out << value[i];
-                }
-            }
-            return out.str();
-        }
-
-        static int ping(std::string ip) {
-#pragma warning(disable : 4996)
-            HANDLE hIcmpFile;
-            unsigned long ipaddr = INADDR_NONE;
-            DWORD dwRetVal = 0;
-            DWORD dwError = 0;
-            char SendData[] = "Data Buffer";
-            LPVOID ReplyBuffer = NULL;
-            DWORD ReplySize = 0;
-            ipaddr = inet_addr(ip.c_str());
-            if (ipaddr == INADDR_NONE) {
-                std::cout << "Ip not valid" << std::endl;
-                return -1;
-            }
-            hIcmpFile = IcmpCreateFile();
-            if (hIcmpFile == INVALID_HANDLE_VALUE) {
-                std::cout << "Unable to open handle.\n";
-                std::cout << "IcmpCreatefile returned error: " << GetLastError() << std::endl;
-                return -1;
-            }
-            // Allocate space for at a single reply
-            ReplySize = sizeof(ICMP_ECHO_REPLY) + sizeof(SendData) + 8;
-            ReplyBuffer = (VOID*)malloc(ReplySize);
-            if (ReplyBuffer == NULL) {
-                std::cout << "Unable to allocate memory for reply buffer\n";
-                return -1;
-            }
-
-            dwRetVal = IcmpSendEcho2(hIcmpFile, NULL, NULL, NULL,
-                ipaddr, SendData, sizeof(SendData), NULL,
-                ReplyBuffer, ReplySize, 1000);
-            if (dwRetVal != 0) {
-                PICMP_ECHO_REPLY pEchoReply = (PICMP_ECHO_REPLY)ReplyBuffer;
-                struct in_addr ReplyAddr;
-                ReplyAddr.S_un.S_addr = pEchoReply->Address;
-                if (dwRetVal > 1) {
-                    //printf("\tReceived %ld icmp message responses\n", dwRetVal);
-                    //printf("\tInformation from the first response:\n");
-                }
-                else {
-                    //printf("\tReceived %ld icmp message response\n", dwRetVal);
-                    //printf("\tInformation from this response:\n");
-                }
-                //printf("\t  Received from %s\n", inet_ntoa(ReplyAddr));
-                //printf("\t  Status = %ld  ", pEchoReply->Status);
-                switch (pEchoReply->Status) {
-                case IP_DEST_HOST_UNREACHABLE:
-                    printf("(Destination host was unreachable)\n");
-                    break;
-                case IP_DEST_NET_UNREACHABLE:
-                    printf("(Destination Network was unreachable)\n");
-                    break;
-                case IP_REQ_TIMED_OUT:
-                    printf("(Request timed out)\n");
-                    break;
-                default:
-                    printf("\n");
-                    break;
-                }
-
-                /*printf("\t  Roundtrip time = %ld milliseconds\n",
-                    pEchoReply->RoundTripTime);*/
-                return pEchoReply->RoundTripTime;
-            }
-            else {
-                printf("Call to IcmpSendEcho2 failed.\n");
-                dwError = GetLastError();
-                switch (dwError) {
-                case IP_BUF_TOO_SMALL:
-                    printf("\tReplyBufferSize to small\n");
-                    break;
-                case IP_REQ_TIMED_OUT:
-                    printf("\tRequest timed out\n");
-                    break;
-                default:
-                    printf("\tExtended error returned: %ld\n", dwError);
-                    break;
-                }
-                return 1;
-            }
-            return 0;
-        }
-
-        static void sleep(int ms) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(ms));
-        }
-
-        static void sleepmcs(int mcs) {
-            std::this_thread::sleep_for(std::chrono::microseconds(mcs));
-        }
-
-        static void sleepex(int ms) {
-            auto now = std::chrono::system_clock::now();
-            int elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - now).count();
-            while (elapsed < ms) {
-                sleepmcs(50);    
-                elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now() - now).count();
-            }
-        }
-        static bool isStartWith(std::string source, std::string prefix) {
-            return source.rfind(prefix, 0) == 0 ? true : false;
-        }
-        static json youtubePerformQuerry(std::string querry, bool debug = false) {
-            CURL* curl = curl_easy_init();
-            if (curl) {
-                struct curl_slist* list = NULL;
-                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1);
-                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 1);
-                /* Provide CA Certs from http://curl.haxx.se/docs/caextract.html */
-                curl_easy_setopt(curl, CURLOPT_CAINFO, "curl-ca-bundle.crt");
-
-                // url encode example https://youtube.googleapis.com/youtube/v3/search?part=snippet&q=this&key=[YOUR_API_KEY]
-                std::string url = "https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=5&q=";
-                //std::replace(querry.begin(), querry.end(), " ", "+");
-                url += utf8_url_encode(querry); //URL encode
-                url += "&key=";
-                url += "AIzaSyB0_DpMR1gi_iuNrPsKgn1LcAN5t5d8_j4";
-                url += "&type=video";
-                if (debug) std::cout << "Querry URL: " << url << std::endl;
-                curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-                list = curl_slist_append(list, "Accept: application/json");
-                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
-                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
-                //curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
-                struct payload chunk;
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
-                if (curl_easy_perform(curl) != CURLE_OK) {
-                    std::cout << "[sendMsg] Perform error!\n";
-                    return NULL;
-                }
-                if (debug) {
-                    std::cout << "[sendMsg] Payload size: " << chunk.size << " bytes" << std::endl;
-                    std::cout << "[sendMsg] payload data: \n" << chunk.memory << std::endl;
-                }
-                std::string stringpayload(chunk.memory, chunk.size + 1);
-                curl_slist_free_all(list); /* free the list again */
-                curl_easy_reset(curl);
-                curl_easy_cleanup(curl);
-                json jsonpayload = json::parse(stringpayload);
-                return jsonpayload;
-            }
-            else {
-                std::cout << "[sendMsg] Invalid handle\n";
-                return NULL;
-            }
-        }
-
-        static void restart(websocketpp::connection_hdl hdl, client* c, concurrency::cancellation_token_source* cts, concurrency::cancellation_token* token, concurrency::task<void>* t) {
-            std::cout << "================================Websocket restart================================\n";
-            cts->cancel();
-            t->wait();
-            //reset token
-            client::connection_ptr con_ptr = c->get_con_from_hdl(hdl);
-            con_ptr->close(websocketpp::close::status::service_restart, "");
-            *cts = concurrency::cancellation_token_source();
-            *token = cts->get_token();
-            std::cout << "Cancel token reset\n";
-
-        }
-
-        static json sendMsg(std::string msg, std::string channelID, bool debug = false) {
-            if (debug) std::cout << "=========================================================================\n";
-            CURL* curl = curl_easy_init();
-            if (curl) {
-                struct curl_slist* list = NULL;
-                json postData;
-                postData["content"] = msg;
-                //postData["nonce"] = "";
-                postData["tts"] = "false";
-                //string data = "{\"content\":\" + cf 2000\",\"nonce\":\"\",\"tts\":false}";
-                std::string data = postData.dump();
-                std::string url = "https://discord.com/api/v8/channels/" + channelID + "/messages";
-                //url = "https://discord.com/api/v8/channels/" + channelID + "/messages";
-                //cout << "Url= " << url << endl;
-                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1);
-                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 1);
-                /* Provide CA Certs from http://curl.haxx.se/docs/caextract.html */
-                curl_easy_setopt(curl, CURLOPT_CAINFO, "curl-ca-bundle.crt");
-                curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-
-                list = curl_slist_append(list, "Authorization: Bot ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss");
-                list = curl_slist_append(list, "Content-Type: application/json");
-
-                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
-                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
-                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
-                struct payload chunk;
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
-                if (curl_easy_perform(curl) != CURLE_OK) {
-                    std::cout << "[sendMsg] Perform error!\n";
-                    return NULL;
-                }
-                if (debug) {
-                    std::cout << "[sendMsg] Payload size: " << chunk.size << " bytes" << std::endl;
-                    std::cout << "[sendMsg] payload data: \n" << chunk.memory << std::endl;
-                }
-                std::string stringpayload(chunk.memory, chunk.size + 1);
-                curl_slist_free_all(list); /* free the list again */
-                curl_easy_reset(curl);
-                //free(chunk.memory);
-                curl_easy_cleanup(curl);
-                json jsonpayload = json::parse(stringpayload);
-                //sleep(delay);     //prevent accidental DDOS which leads to token revoked
-                return jsonpayload;
-            }
-            else {
-                std::cout << "[sendMsg] Invalid handle\n";
-                return NULL;
-            }
-        }
-        static void youtubePrintSearchResult(json result, std::string querry, std::string channel, bool debug = false) {
-            std::string printString = "Show result for keyword: ";
-            printString += "\"";
-            printString += querry += "\"\n";
-            //printString += "1: " += result["item"][i]["snippet"]["title"];
-            for (int i = 0; ((!result["items"][i].is_null()) && result["items"][i]["snippet"]["title"].is_string()); i++) {
-                //result["item"].co
-                printString += std::to_string(i + 1);
-                printString += ": ";
-                std::string temp = result["items"][i]["snippet"]["title"];
-                temp = std::regex_replace(temp, std::regex("&quot;"), R"(")");
-                printString += temp;
-                printString += "\n";
-            }
-            if (debug) std::cout << printString << std::endl;
-            sendMsg(printString, channel);
-            sendMsg("Note: Voice function is still in development", channel);
-        }
-
-        static bool isOwner(json data) {
-            std::string ownerid = "308556224910327808";
-            if (data["d"]["author"]["id"].is_string()) {
-                return data["d"]["author"]["id"] == ownerid ? true : false;
-            }
-            else {
-                std::cout << "Can not parse author id" << std::endl;
-                return false;
-            }
-        }
-
-        static bool isSelf(json data, json ready) {
-            if (data["d"]["user_id"] == ready["d"]["user"]["id"]) return true;
-            else return false;
-        }
-
-        static context_ptr on_tls_init() {
-            // establishes a SSL connection
-            context_ptr ctx = std::make_shared<boost::asio::ssl::context>(boost::asio::ssl::context::sslv23);
-
-            try {
-                ctx->set_options(boost::asio::ssl::context::default_workarounds |
-                    boost::asio::ssl::context::no_sslv2 |
-                    boost::asio::ssl::context::no_sslv3 |
-                    boost::asio::ssl::context::single_dh_use);
-
-            }
-            catch (std::exception& e) {
-                std::cout << "Error in context pointer: " << e.what() << std::endl;
-            }
-            return ctx;
-        }
-    };
+namespace discordbot {
     class voiceclient {
     public:
         //Variable zone
+        concurrency::task<void> pusher;
         std::queue<std::string> selfqueue; //queue for video id
         client* gatewayclient; //cache gateway endpoint
         websocketpp::connection_hdl gatewayhdl; //cache gateway hdl for sending message
-        int offset = 0;
         std::vector<unsigned char> key;
         udp::udpclient udpclient;
         std::string user_id = "";
@@ -471,19 +119,19 @@ public:
         std::string endpoint = "";
         std::string session = "";
         bool first_time = true;
-        bool running = false;
-        bool connect = false;
-        unsigned short FrameInterval = 12;
-        //int a[6];
+        bool running = false; //set true: when player is playing.
+        bool connect = false; //set true: when encrypt key received. set false: when close handshake; usage: indicate connection status
+        bool state = false;   //set true: when encrypt key received. set false: when cleanup; usage: to lock operate of pusher
+        int expected_packet_loss = 20;
+        long long offset = 10;
         int ssrc = 0;
         int heartbeat_interval = 0;
         int seq_num = 0;
         bool is_websocket_restart = false;
-        bool state = false;
         json ready;
         client c;
+        std::string default_channel;
         websocketpp::connection_hdl hdl;
-        //client::connection_ptr con_ptr;
         concurrency::cancellation_token_source cts;
         concurrency::cancellation_token token = cts.get_token(); //this is global token specially for cancelling heartbeat func
         concurrency::task<void> t;
@@ -492,12 +140,24 @@ public:
         concurrency::cancellation_token p_token = p_cts.get_token();
         concurrency::task<void> playing;
 
-        //
-
-        void setFrameInterval(std::string interval) {
+        /*void setFrameInterval(std::string interval) {
             FrameInterval = (unsigned short)stoi(interval);
-            std::cout << "Changed frame interval: " << FrameInterval;
+            std::string p = "Changed frame interval: " + FrameInterval;
+            std::cout << p;
             return;
+        }*/
+
+        void set_default_channel(std::string channel) {
+            default_channel = channel;
+            return;
+        }
+
+        bool is_connect() {
+            return connect;
+        }
+
+        bool is_running() {
+            return running;
         }
 
         void selectProtocol(websocketpp::connection_hdl hdl, client* c, std::string address, int port) {
@@ -505,12 +165,15 @@ public:
             payload += address += R"(","port": )";
             payload += std::to_string(port);
             payload += R"(, "mode": "xsalsa20_poly1305"}}})";
-            std::cout << "Select protocol sent with payload: " << payload << std::endl;
+            std::string p = "Select protocol sent with payload: " + payload + "\n";
+            std::cout << p;
             websocketpp::lib::error_code ec;
             c->send(hdl, payload, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::cout << "Select protocol failed because: " << ec.message() << std::endl;
+                p = "Select protocol failed because: " + ec.message() + "\n";
+                std::cout << p;
             }
+            return;
         }
 
         bool isReady() {
@@ -542,7 +205,8 @@ public:
             std::cout << "Authorizing...\n";
             c->send(hdl, auth_str, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::cout << "Authorization failed because: " << ec.message() << std::endl;
+                std::string p = "Authorization failed because: " + ec.message() + "\n";
+                std::cout << p;
             }
             return;
         }
@@ -563,10 +227,12 @@ public:
                         }
                     })";*/
             std::cout << "Resuming...\n";
-            std::cout << "Resume payload:" << resume.dump() << std::endl;
+            std::string p = "Resume payload:" + resume.dump() + "\n";
+            std::cout << p;
             c->send(hdl, resume.dump(), websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::cout << "Resume failed because: " << ec.message() << std::endl;
+                p = "Resume failed because: " + ec.message() + "\n";
+                std::cout << p;
                 return;
             }
             a->is_websocket_restart = false; //reset flag
@@ -582,9 +248,8 @@ public:
             websocketpp::lib::error_code ec;
             c.send(hdl, payload, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::cout << "Can not send speak message";
+                std::cout << "Can not send speak message because: " << ec.message() << std::endl;
             }
-            utils::sleep(1000);
             return;
         }
 
@@ -604,7 +269,9 @@ public:
         }
 
         std::string getHeartBeatPayload(int seq_num) {
-            std::string result = R"({"op":3,"d":1234567890123})";
+            std::string result = R"({"op":3,"d":633218964771569676})";
+            /*633218964771569676
+                1234567890123*/
             return result;
         }
 
@@ -738,6 +405,7 @@ public:
                             //std::cout << i;
                         }
                         state = true;
+                        connect = true;
                         break;
                     }
                     else {
@@ -750,15 +418,21 @@ public:
 
         void on_close(client* c, websocketpp::connection_hdl hdl) {
             c->get_alog().write(websocketpp::log::alevel::app, "<Voiceclient> Connection Closed");
-            std::cout << "Connection closed on hdl: " << hdl.lock().get() << std::endl;
+            std::cout << "<Voiceclient> Connection closed on hdl: " << hdl.lock().get() << std::endl;
             connect = false;
         }
 
-        void leave() {
-            cleanup();
+        void stop() {
+            
         }
 
-        //skip current playing track
+        //clear self queue
+        void clear() {
+            std::queue<std::string> empty;
+            std::swap(selfqueue, empty);
+        }
+
+        //skip current playing track by cancel playing task
         void skip() {
 
         }
@@ -767,19 +441,64 @@ public:
         void remove(int position) {
 
         }
+
+        //stop operation, clear self queue and disconnect
+        void leave() {
+            clear();
+            cleanup();
+        }
+
+        //cancel all operation
         void cleanup() {
             if (connect) {
                 std::cout << "Connection close, performing cleanup\n";
+                state = false; //lock pusher
+                endpoint = "";
+                guildid = "";
+                _token = "";
+                session = "";
+                user_id = "";
+                key.clear();
 
                 cts.cancel();
-                t.wait();
-
-                p_cts.cancel();
-                if (running) {
-                    playing.wait();
+                if (connect) {
+                    std::cout << "Waiting for heartbeat thread to exit\n";
+                    t.wait();
                 }
 
+                
+                if (running) {
+                    std::string str = "Stop player\n";
+                    std::cout << str;
+                    p_cts.cancel();
+                    playing.wait();
+                    p_cts = concurrency::cancellation_token_source();
+                    p_token = p_cts.get_token();
+                }
+                else {
+                    std::string str = "Player is not running\n";
+                    std::cout << str;
+                }
+
+                std::cout << "Close udp socket\n";
+                udpclient.cleanup();
+                //pusher.wait();
+
+                //reset token
+                cts = concurrency::cancellation_token_source();
+                token = cts.get_token();
+
+                //reset play token
+
                 websocketpp::lib::error_code ec;
+                c.ping(hdl, "", ec);
+                if (ec) {
+                    std::cout << "Handle ping failed because: " << ec.message() << std::endl;
+                    return;
+                }
+                else {
+                    std::cout << "Connection is still alive, killing it\n";
+                }
                 client::connection_ptr con_ptr = c.get_con_from_hdl(hdl);
                 con_ptr->close(websocketpp::close::status::service_restart, "", ec);
                 if (ec) {
@@ -790,33 +509,17 @@ public:
                     utils::sleep(50);
                 }
 
-                //reset token
-                cts = concurrency::cancellation_token_source();
-                token = cts.get_token();
-
-                //reset play token
-                p_cts = concurrency::cancellation_token_source();
-                p_token = p_cts.get_token();
-
-
-                key.clear();
-                udpclient.cleanup();
-
-                std::queue<std::string> empty;
-                std::swap(selfqueue, empty);
-
-                endpoint = "";
-                guildid = "";
-                _token = "";
-                session = "";
-                user_id = "";
-                state = false;
+                //connect = false;
             }
-            else return;
+            else {
+                std::cout << "No connection exist. Skip clean up\n";
+                return;
+            }
         }
         
         void start(client* gatewayclient, websocketpp::connection_hdl gatewayhdl, std::string uri, std::string guildid, std::string _token, std::string session, std::string user_id) {
             sodium_init();
+            auto shared_running = std::make_shared<bool*>(&running);
             this->endpoint = uri;
             this->guildid = guildid;
             this->_token = _token;
@@ -838,57 +541,69 @@ public:
             c.set_close_handler(bind(&voiceclient::on_close, this, &c, ::_1));
             c.reset();
             c.connect(con_ptr);
-            connect = true;
             if (first_time) {
+                std::string str = "First time launch voiceclient, start endpoint and pusher\n";
+                std::cout << str;
                 first_time = false;
                 concurrency::create_task([this] {
                     c.run();
                     });
-            }
-            auto shared_token = std::make_shared<concurrency::cancellation_token*>(&p_token);
-            concurrency::create_task([this, shared_token] {
-                while (1) {
-                    if (selfqueue.size() > 0) {
-                        this->playing = play(selfqueue.front());
-                        selfqueue.pop();
-                        playing.wait();
-                        if ((*shared_token)->is_canceled()) {
-                            return;
+                pusher = concurrency::create_task([this, shared_running] {
+                    while (1) {
+                        if (selfqueue.size() > 0 && state && !(**shared_running)) {
+                            std::cout << "[Pusher] Push video " << selfqueue.front() << std::endl;
+                            this->playing = play(selfqueue.front());
+                            selfqueue.pop();
+                            while (**shared_running) {
+                                utils::sleep(100);
+                            }
+                            utils::sleep(100);
                         }
-                    } 
-                    else {
-                        utils::sleep(1000);
+                        else {
+                            utils::sleep(100);
+                        }
+                        utils::sleep(100);
                     }
-                }
                 });
+            } 
         }
 
         concurrency::task<void> play(std::string id) {
+            running = true;
             auto shared_token = std::make_shared<concurrency::cancellation_token*>(&p_token);
-            return concurrency::create_task([this, id, shared_token] {
-                //audio source(path);
+            auto shared_running = std::make_shared<bool*>(&running);
+            return concurrency::create_task([this, id, shared_token, shared_running] {
                 speak();
-                audio* source = new audio(id);
+                std::string title = utils::youtubeGetTitle(id);
+                std::string payload = "Now playing:\n";
+                payload = payload + "\"" + title + "\"";
+                utils::sendMsg(payload, default_channel);
                 printf("creating opus encoder\n");
+                audio* source = new audio(id);
                 const unsigned short FRAME_MILLIS = 20;
                 const unsigned short FRAME_SIZE = 960;
                 const unsigned short SAMPLE_RATE = 48000;
                 const unsigned short CHANNELS = 2;
-                const unsigned int BITRATE = 64000;
-
+                const unsigned int BITRATE = 80000;
                 #define MAX_PACKET_SIZE FRAME_SIZE * 5
                 int error;
                 OpusEncoder* encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, OPUS_APPLICATION_AUDIO, &error);
                 if (error < 0) {
                     throw "failed to create opus encoder: " + std::string(opus_strerror(error));
                 }
-
+                error = opus_encoder_ctl(encoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
+                if (error < 0) {
+                    throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+                }
                 error = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(BITRATE));
                 if (error < 0) {
                     throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
                 }
+                error = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(expected_packet_loss));
+                if (error < 0) {
+                    throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+                }
 
-                //_log.debug("initialising libsodium");
                 if (sodium_init() == -1) {
                     throw "libsodium initialisation failed";
                 }
@@ -898,21 +613,17 @@ public:
                 opus_int16* in_data;
                 std::vector<unsigned char> opus_data(MAX_PACKET_SIZE);
 
-                //_log.debug("starting loop");
-
                 class timer_event {
                     bool is_set = false;
 
                 public:
                     bool get_is_set() { return is_set; };
-
                     void set() { is_set = true; };
                     void unset() { is_set = false; };
                 };
 
                 timer_event* run_timer = new timer_event();
                 run_timer->set();
-                running = true;
                 concurrency::create_task([run_timer, this, shared_token] {
                     while (run_timer->get_is_set()) {
                         speak();
@@ -931,58 +642,66 @@ public:
                             }
                         }
                     }});
-                std::queue<std::string>* buffer = new std::queue<std::string>();
-                unsigned short* interval = &FrameInterval;
-                auto timer = concurrency::create_task([run_timer, this, buffer, FRAME_MILLIS, interval, shared_token] {
+                std::deque<std::string>* buffer = new std::deque<std::string>();
+                auto shared_offset = std::make_shared<long long*>(&offset);
+                auto timer = concurrency::create_task([run_timer, this, buffer, FRAME_MILLIS, shared_token, shared_offset, shared_running] {
                     while (run_timer->get_is_set() || buffer->size() > 0) {
                         utils::sleep(5 * FRAME_MILLIS);
-                        int loop = 0;
-                        auto start = std::chrono::system_clock::now();
-                        while (buffer->size() > 0) { 
+                        **shared_running = true;
+                        int sent = 0;
+                        auto start = boost::chrono::high_resolution_clock::now();
+                        while (buffer->size() > 0) {
                             if (udpclient.send(buffer->front()) != 0) {
-                                std::cout << "Stop sendding voice data due to udp error";
+                                std::cout << "Stop sendding voice data due to udp error\n";
+                                **shared_running = false;
                                 return;
                             }
-                            //udpclient.send(buffer->front());
-                            //udpclient.send(buffer->front());
-                            buffer->pop();
-                            loop++;
-                            int next_time = (FRAME_MILLIS) * loop;
-                            auto now = std::chrono::system_clock::now();
-                            int ms_elapsed = (std::chrono::duration_cast<std::chrono::milliseconds>(now - start)).count(); // elapsed time from start loop
-                            int delay = std::max(0, FRAME_MILLIS+ (next_time - ms_elapsed));
+                            buffer->pop_front();
                             if ((*shared_token)->is_canceled()) {
                                 std::cout << "Stop sending voice data due to cancel\n";
+                                **shared_running = false;
                                 concurrency::cancel_current_task();
-                                return;
                             }
-                            utils::sleepex(delay-FrameInterval);
-                        }     
+                            sent++;
+                            long long next_time = (long long)(sent+1) * (long long)(FRAME_MILLIS) * 1000 ;
+                            auto now = boost::chrono::high_resolution_clock::now();
+                            long long mcs_elapsed = (boost::chrono::duration_cast<boost::chrono::microseconds>(now - start)).count(); // elapsed time from start loop
+                            long long delay = std::max((long long)0, (next_time - mcs_elapsed));
+                            utils::timerSleep(delay*10e-6); //sleep microseconds                           
+                        }    
+                        **shared_running = false;
                     }
                     });
                 unsigned short _sequence = 0;
                 unsigned int _timestamp = 0;
                 int totalsize = 0;
+                int cached_expected_packet_loss = 0;
                 while (1) {
-                    if (buffer->size() >= 50) {
+                    if (buffer->size() >= 20) {
                         utils::sleep(FRAME_MILLIS);
                     }
-
+                    if (cached_expected_packet_loss != expected_packet_loss) {
+                        cached_expected_packet_loss = expected_packet_loss;
+                        error = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(expected_packet_loss));
+                        if (error < 0) {
+                            throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+                        }
+                    }
                     if (source->read((char*)pcm_data, FRAME_SIZE * CHANNELS * 2) != true)
                         break;
                     if ((*shared_token)->is_canceled()) {
                         std::cout << "Stop encoding due to cancel\n";
                         break;
                     }
-                    in_data = reinterpret_cast<opus_int16*>(pcm_data);
 
+                    in_data = reinterpret_cast<opus_int16*>(pcm_data);
+                    //in_data = (opus_int16*)pcm_data;
                     num_opus_bytes = opus_encode(encoder, in_data, FRAME_SIZE, opus_data.data(), MAX_PACKET_SIZE);
                     if (num_opus_bytes <= 0) {
                         throw "failed to encode frame: " + std::string(opus_strerror(num_opus_bytes));
                     }
 
                     opus_data.resize(num_opus_bytes);
-
                     std::vector<unsigned char> packet(12 + opus_data.size() + crypto_secretbox_MACBYTES);
 
                     packet[0] = 0x80;	//Type
@@ -1002,8 +721,11 @@ public:
                     packet[11] = (unsigned char)ssrc;
 
                     _sequence++;
-                    _timestamp += ((SAMPLE_RATE) / 1000 * (FRAME_MILLIS));
+                    _timestamp += SAMPLE_RATE / 1000 * FRAME_MILLIS; //48000Hz / 1000 * 20(ms)
 
+                    if (_sequence < 10) { //skip first 10 frames
+                        continue;
+                    }
                     unsigned char nonce[crypto_secretbox_NONCEBYTES];
                     memset(nonce, 0, crypto_secretbox_NONCEBYTES);
 
@@ -1017,21 +739,18 @@ public:
 
                     std::string msg;
                     msg.resize(packet.size(), '\0');
-
                     for (unsigned int i = 0; i < packet.size(); i++) {
                         msg[i] = packet[i];
                     }
-                    std::cout << "|";
-                    //std::cout << "\nMsg size: " << msg.length();
                     totalsize += msg.length();
-                    //std::cout << "\nTotal size: " << totalsize;
-                    buffer->push(msg);
+                    buffer->push_back(msg);
                 }
+
                 std::cout << "Total size: " << totalsize << std::endl;
                 run_timer->unset();
-                running = false;
                 timer.wait();   
                 unspeak();
+                **shared_running = false;
                 delete run_timer;
                 delete buffer;
 
@@ -1108,7 +827,7 @@ public:
 
         static void auth(websocketpp::connection_hdl hdl, client* c) {
             websocketpp::lib::error_code ec;
-            std::string auth_str = "{\"op\":2,\"d\":{\"token\":\"ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss\",\"intents\":648,\"properties\":{\"$os\":\"window\",\"$browser\":\"\",\"$device\":\"\"}}}";
+            std::string auth_str = "{\"op\":2,\"d\":{\"token\":\"ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss\",\"intents\":1664,\"properties\":{\"$os\":\"window\",\"$browser\":\"\",\"$device\":\"\"}}}";
             std::cout << "Authorizing...\n";
             c->send(hdl, auth_str, websocketpp::frame::opcode::text, ec);
             if (ec) {
@@ -1350,12 +1069,13 @@ public:
                         }
                         else {
                             if (voicegroup.find(guildid) == voicegroup.end()) { //not exist
-                                std::cout << "Start voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid;
+                                std::cout << "Start voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
                                 voicegroup[guildid] = new voiceclient;
                                 voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][selfid]->sessionid, selfid);
                             }
                             else { //exist
                                 //stop old connection and start a new connection
+                                std::cout << "Exist voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
                                 voicegroup[guildid]->cleanup();
                                 voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, ready["d"]["user"]["id"]);
                             }
@@ -1395,7 +1115,7 @@ public:
                         else std::cout << "Can not parse userid from message: " << msg->get_payload() << std::endl;
 
                         if (js_msg["d"]["mentions"][0]["id"] == (**s_ready)["d"]["user"]["id"]) {  //mention
-                            utils::sendMsg("Why mention me? I won't show you my prefix is -", channel);
+                            utils::sendMsg("Why mention me? I won't show you my prefix is ?", channel);
                             std::cout << js_msg["d"]["mentions"][0]["id"] << std::endl;
                             std::cout << (**s_ready)["d"]["user"]["id"] << std::endl;
                             break;
@@ -1424,11 +1144,24 @@ public:
                             }
                             break;
                         }
+
                         if (content == "?join") { //join command
                             if (usergroup.find(guild) != usergroup.end()) {
                                 if (usergroup[guild].find(userid) != usergroup[guild].end()) {
                                     if (usergroup[guild][userid]->get_voice_channel_id() != "") {
                                         websocketpp::lib::error_code ec;
+                                        if (voicegroup.find(guild) == voicegroup.end()) { //not exist
+                                            //std::cout << "Start voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
+                                            voicegroup[guild] = new voiceclient;
+                                            voicegroup[guild]->set_default_channel(channel);
+                                            //voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][selfid]->sessionid, selfid);
+                                        }
+                                        else { //exist
+                                            //stop old connection and start a new connection
+                                            //std::cout << "Exist voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
+                                            voicegroup[guild]->set_default_channel(channel);
+                                            //voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, ready["d"]["user"]["id"]);
+                                        }
                                         c->send(hdl, getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
                                         if (ec) {
                                             std::cout << "Can not send voice state update payload because: " << ec.message();
@@ -1449,34 +1182,45 @@ public:
                                 std::string payload = "```Internal error, please rejoin voice channel```";
                                 utils::sendMsg(payload, channel);
                             }
+                            break;
                         }
 
                         if (content == "?leave") {
                             if (voicegroup.find(guild) == voicegroup.end()) {
                                 std::string payload = "Not currently in any voice channel";
                                 utils::sendMsg(payload, channel);
-                                break;
                             }
-                            else if (voicegroup[guild]->connect == false) {
-                                break;
-                            } else {
-                                voicegroup[guild]->cleanup();
-                                /*while (voicegroup[guild]->connect == true) {
-                                    std::cout << "Waiting for connection close\n";
-                                    utils::sleep(100);
-                                }*/
-                                if (voicegroup[guild]->connect == false) {
-                                    websocketpp::lib::error_code ec;
-                                    std::string payload = getVoiceStateUpdatePayload(guild, "null");
-                                    c->send(hdl, payload, websocketpp::frame::opcode::text);
-                                    if (ec) {
-                                        std::cout << "Cannot send voice update payload because: " << ec.message() << std::endl;
-                                        break;
-                                    }
-                                    payload = "Okela";
-                                    utils::sendMsg(payload, channel);
+                            else {
+                                voicegroup[guild]->clear();
+                                utils::sendMsg("Got it", channel);
+                                websocketpp::lib::error_code ec;
+                                std::string payload = getVoiceStateUpdatePayload(guild, "null");
+                                c->send(hdl, payload, websocketpp::frame::opcode::text);
+                                if (ec) {
+                                    std::cout << "Cannot send voice update payload because: " << ec.message() << std::endl;
+                                    break;
                                 }
                             }
+                            //else if (voicegroup[guild]->connect == false) {
+                            //    break;
+                            //} else {
+                            //    //voicegroup[guild]->cleanup();
+                            //    ///*while (voicegroup[guild]->connect == true) {
+                            //    //    std::cout << "Waiting for connection close\n";
+                            //    //    utils::sleep(100);
+                            //    //}*/
+                            //    //if (voicegroup[guild]->connect == false) {
+                            //    //    websocketpp::lib::error_code ec;
+                            //    //    std::string payload = getVoiceStateUpdatePayload(guild, "null");
+                            //    //    c->send(hdl, payload, websocketpp::frame::opcode::text);
+                            //    //    if (ec) {
+                            //    //        std::cout << "Cannot send voice update payload because: " << ec.message() << std::endl;
+                            //    //        break;
+                            //    //    }
+                            //    //    payload = "Okela";
+                            //    //    utils::sendMsg(payload, channel);
+                            //    //}
+                            //}
                             break;
                         }
 
@@ -1503,13 +1247,17 @@ public:
                                                         voicegroup[guild]->selfqueue.push(temp->data[selected-1]);
                                                         std::cout << "User " << userid << " selected video " << temp->data[selected - 1] << std::endl;
                                                         websocketpp::lib::error_code ec;
+                                                        /*if (voicegroup[guild]->is_connect() && !(voicegroup[guild]->is_running())) {
+                                                            std::cout << "Voice client already connected, and player is running this should be a change channel request. Double push.\n";
+                                                            voicegroup[guild]->selfqueue.push(temp->data[selected - 1]);
+                                                        }*/
                                                         c->send(hdl, getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
                                                         if (ec) {
-                                                            std::cout << "can not send voice state update payload because: " << ec.message();
+                                                            std::cout << "can not send voice state update payload because: " << ec.message() << std::endl;
                                                         }
                                                     }
                                                     else {
-                                                        std::string payload = "You are not in voice channel!";
+                                                        std::string payload = "You are not in any voice channel!";
                                                         utils::sendMsg(payload, channel);
                                                     }
                                                 }
@@ -1534,11 +1282,20 @@ public:
 
                         if (utils::isStartWith(content, "?p")) {
                             //parse string
-                            if (voicegroup.find(guild) == voicegroup.end()) {
-                                std::cout << "Create voice endpoint for guild: " << guild << std::endl;
+                            if (voicegroup.find(guild) == voicegroup.end())  {
+                                std::string str = "Create voice endpoint for guild: " + guild + "\n";
+                                std::cout << str;
                                 voicegroup[guild] = new voiceclient;
+                                str = "Set default channel of guild " + guild + " to " + channel + "\n";
+                                std::cout << str;
+                                voicegroup[guild]->set_default_channel(channel);
                             }
-                            else std::cout << "Voice endpoint already exist\n";
+                            else {
+                                std::cout << "Voice endpoint already exist\n";
+                                std::string str = "Set default channel of guild " + guild + " to " + channel + "\n";
+                                std::cout << str;
+                                voicegroup[guild]->set_default_channel(channel);
+                            }
                             std::string querry = content.erase(0, 3);
                             if (querry == "") {
                                 utils::sendMsg("Please provide paramenter", channel);
@@ -1548,23 +1305,23 @@ public:
                                 json result = utils::youtubePerformQuerry(querry);
                                 std::cout << "Querry result for keyword: " << querry << std::endl;
                                 //std::cout << result.dump() << std::endl;
-                                utils::youtubePrintSearchResult(result, querry, channel);
                                 mainqueue[guild][userid] = new querryqueue;
                                 mainqueue[guild][userid]->push(js_msg, result);
                                 std::cout << "Cached search querry\n";
+                                utils::youtubePrintSearchResult(result, querry, channel);
                             }
                             break;
                         }
 
                         std::string value = "";
-                        if (utils::parse(&value, "frameinterval", content)) {
+                        if (utils::parse(&value, "loss", content) || utils::parse(&value, "Loss", content)) {
                             if (voicegroup.find(guild) == voicegroup.end()) {
                                 utils::sendMsg("You must play music at lease 1 time to be able to config.", channel);
                                 break;
                             }
                             std::string num = "";
                             if (value == "?") {
-                                std::string payload = "Current frame interval: " + std::to_string(voicegroup[guild]->FrameInterval);
+                                std::string payload = "Current expected loss: " + std::to_string(voicegroup[guild]->expected_packet_loss);
                                 utils::sendMsg(payload, channel);
                                 break;
                             }
@@ -1579,9 +1336,14 @@ public:
                                 utils::sendMsg(payload, channel);
                                 break;
                             }
+                            if (stoi(num) >= 100 || stoi(num) < 0) {
+                                std::string payload = "Paramenter must be between 0 and 99";
+                                utils::sendMsg(payload, channel);
+                                break;
+                            }
                             websocketpp::lib::error_code ec;
-                            std::string payload = "Changed frame interval to " + std::to_string((unsigned short)stoi(value)) + ". Old value: " + std::to_string(voicegroup[guild]->FrameInterval);
-                            voicegroup[guild]->FrameInterval = (unsigned short)stoi(value);
+                            std::string payload = "Changed expected loss to " + std::to_string((unsigned short)stoi(value)) + ". Old value: " + std::to_string(voicegroup[guild]->expected_packet_loss);
+                            voicegroup[guild]->expected_packet_loss = (unsigned short)stoi(num);
                             utils::sendMsg(payload, channel);
                             break;
                         }

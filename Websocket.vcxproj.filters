@@ -26,5 +26,11 @@
     <ClInclude Include="udp.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="embed.hpp">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="utils.hpp">
+      <Filter>Source Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
