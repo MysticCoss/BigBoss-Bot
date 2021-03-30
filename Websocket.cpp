@@ -1,4 +1,5 @@
 ﻿#pragma once
+// BOOST_INTERPROCESS_USE_DLL
 #include "websocketpp/config/asio_client.hpp"
 #include "websocketpp/client.hpp"
 #include <nlohmann/json.hpp>
@@ -26,6 +27,8 @@
 #include <opus/opus.h>
 #include "utils.hpp"
 #include "embed.hpp"
+#include "log.hpp"
+
 boost::asio::io_context context_io;
 typedef websocketpp::client<websocketpp::config::asio_tls_client> client;
 typedef std::shared_ptr<boost::asio::ssl::context> context_ptr;
@@ -34,6 +37,8 @@ using websocketpp::lib::placeholders::_2;
 using websocketpp::lib::bind;
 typedef nlohmann::json json;
 typedef websocketpp::config::asio_client::message_type::ptr message_ptr;
+boost::log::sources::severity_logger_mt<severity_level> lg;
+
 
 struct querryqueue {
     std::string userid = "";
@@ -41,24 +46,26 @@ struct querryqueue {
     std::string channelid = "";
     std::string data[5];
     bool set = false;
-    querryqueue() {
+    discordbot::logger* logger;
+    querryqueue(discordbot::logger* logger) {
+        this->logger = logger;
         for (int i = 0; i < 5; i++) {
             data[i] = "";
         }
     }
     bool push(json js_msg, json querrydata) {
         if (js_msg["d"]["author"]["id"].is_null() || js_msg["d"]["guild_id"].is_null() || js_msg["d"]["channel_id"].is_null()) {
-            std::cout << "Can not queue querry data: 1\n";
+            logger->log("Can not queue querry data", info);
             set = false;
             return false;
         }
         else if (querrydata["items"][0]["id"]["videoId"].is_null() || querrydata["items"][1]["id"]["videoId"].is_null() || querrydata["items"][2]["id"]["videoId"].is_null() || querrydata["items"][3]["id"]["videoId"].is_null() || querrydata["items"][4]["id"]["videoId"].is_null()) {
-            std::cout << "Can not queue querry data: 2\n";
+            logger->log("Can not queue querry data", info);
             set = false;
             return false;
         }
         else {
-            std::cout << "Queued search data\n";
+            logger->log("Queued search data\n", info);
             userid = js_msg["d"]["author"]["id"];
             guildid = js_msg["d"]["guild_id"];
             channelid = js_msg["d"]["channel_id"];
@@ -80,12 +87,22 @@ struct querryqueue {
     }
 };
 
+//enum severity_level
+//{
+//    normal,
+//    notification,
+//    warning,
+//    error,
+//    critical
+//};
+
+
 struct userinfo {
     std::string userid = "";
     std::string guildid = "";
     std::string channelid = "";
     std::string sessionid = "";
-    void update(json data) {
+    void update(json data, discordbot::logger* logger) {
         if (data["d"]["channel_id"].is_null()) {
             channelid = "";
         }
@@ -93,7 +110,7 @@ struct userinfo {
         userid = data["d"]["user_id"];
         guildid = data["d"]["guild_id"];
         sessionid = data["d"]["session_id"];
-        std::cout << "Update cache data for user " << userid << " in guild " << guildid << ": Channel ID = " << (channelid == "" ? "NULL" : channelid) << ", session ID = " << sessionid << std::endl;
+        logger->log({ "Update cache data for user " + userid + " in guild " + guildid + ": Channel ID = " + (channelid == "" ? "NULL" : channelid) + ", session ID = " + sessionid }, info);
     }
     std::string get_voice_channel_id() {
         return channelid;
@@ -105,6 +122,15 @@ struct userinfo {
 
 namespace discordbot {
     class voiceclient {
+    private:
+        logger* logger;
+        std::string current_voice_channel = "";
+        std::string default_channel = "";
+        bool is_pusher_locked = false;
+        bool first_time = true;
+        bool running = false; //set true: when player is playing.
+        bool connect = false; //set true: when encrypt key received. set false: when close handshake; usage: indicate connection status
+        bool state = false;   //set true: when encrypt key received. set false: when cleanup; usage: to lock operate of pusher
     public:
         //Variable zone
         concurrency::task<void> pusher;
@@ -118,11 +144,7 @@ namespace discordbot {
         std::string guildid = "";
         std::string endpoint = "";
         std::string session = "";
-        bool first_time = true;
-        bool running = false; //set true: when player is playing.
-        bool connect = false; //set true: when encrypt key received. set false: when close handshake; usage: indicate connection status
-        bool state = false;   //set true: when encrypt key received. set false: when cleanup; usage: to lock operate of pusher
-        int expected_packet_loss = 20;
+        int expected_packet_loss = 30;
         long long offset = 10;
         int ssrc = 0;
         int heartbeat_interval = 0;
@@ -130,7 +152,6 @@ namespace discordbot {
         bool is_websocket_restart = false;
         json ready;
         client c;
-        std::string default_channel;
         websocketpp::connection_hdl hdl;
         concurrency::cancellation_token_source cts;
         concurrency::cancellation_token token = cts.get_token(); //this is global token specially for cancelling heartbeat func
@@ -140,23 +161,51 @@ namespace discordbot {
         concurrency::cancellation_token p_token = p_cts.get_token();
         concurrency::task<void> playing;
 
-        /*void setFrameInterval(std::string interval) {
-            FrameInterval = (unsigned short)stoi(interval);
-            std::string p = "Changed frame interval: " + FrameInterval;
-            std::cout << p;
-            return;
-        }*/
+        //lock the pusher until next start
+        void lockPusher() {
+            logger->log("Try locking pusher", info);
+            if (is_pusher_locked == false) {
+                logger->log("Pusher locked", info);
+                is_pusher_locked = true;
+            }
+            else {
+                logger->log("Pusher is already locked", info);
+            }
+        }
 
-        void set_default_channel(std::string channel) {
-            default_channel = channel;
+        void unlockPusher() {
+            logger->log("Try unlocking pusher", info);
+            if (is_pusher_locked == true) {
+                logger->log("Pusher unlocked", info);
+                is_pusher_locked = false;
+            }
+            else {
+                logger->log("Pusher is already unlocked", info);
+            }
+        }
+
+        void setCurrentVoiceChannel(std::string current_voice_channel) {
+            logger->log("Set current voice channel to: " + current_voice_channel, info);
+            this->current_voice_channel = current_voice_channel;
             return;
         }
 
-        bool is_connect() {
+        std::string getCurrentVoiceChannel() {
+            logger->log("Get current voice channel: " + current_voice_channel, info);
+            return current_voice_channel;
+        }
+
+        void setDefaultChannel(std::string channel) {
+            default_channel = channel;
+            logger->log("Set default channel to " + channel, info);
+            return;
+        }
+
+        bool isConnect() {
             return connect;
         }
 
-        bool is_running() {
+        bool isRunning() {
             return running;
         }
 
@@ -165,13 +214,11 @@ namespace discordbot {
             payload += address += R"(","port": )";
             payload += std::to_string(port);
             payload += R"(, "mode": "xsalsa20_poly1305"}}})";
-            std::string p = "Select protocol sent with payload: " + payload + "\n";
-            std::cout << p;
+            logger->log({ "Select protocol sent with payload: " + payload }, info);
             websocketpp::lib::error_code ec;
             c->send(hdl, payload, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                p = "Select protocol failed because: " + ec.message() + "\n";
-                std::cout << p;
+                logger->log({ "Select protocol failed because: " + ec.message() }, info);
             }
             return;
         }
@@ -202,16 +249,15 @@ namespace discordbot {
             auth_str += R"(","token": ")";
             auth_str += _token;
             auth_str += R"("}})";
-            std::cout << "Authorizing...\n";
             c->send(hdl, auth_str, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::string p = "Authorization failed because: " + ec.message() + "\n";
-                std::cout << p;
+                logger->log("Authorization failed because: " + ec.message(), error);
             }
+            logger->log("Authorize packet sent", info);
             return;
         }
 
-        static void resume(discordbot::voiceclient* a, websocketpp::connection_hdl hdl, client* c) {
+        void resume(discordbot::voiceclient* a, websocketpp::connection_hdl hdl, client* c) {
             websocketpp::lib::error_code ec;
             json resume;
             resume["op"] = 6;
@@ -226,16 +272,13 @@ namespace discordbot {
                             "seq": 1337
                         }
                     })";*/
-            std::cout << "Resuming...\n";
-            std::string p = "Resume payload:" + resume.dump() + "\n";
-            std::cout << p;
+            logger->log("Resume packet sent with payload:" + resume.dump(), info);
             c->send(hdl, resume.dump(), websocketpp::frame::opcode::text, ec);
             if (ec) {
-                p = "Resume failed because: " + ec.message() + "\n";
-                std::cout << p;
+                logger->log("Resume failed because: " + ec.message(), error);
                 return;
             }
-            a->is_websocket_restart = false; //reset flag
+            is_websocket_restart = false; //reset flag
             return;
         }
 
@@ -244,11 +287,11 @@ namespace discordbot {
             //payload += "1";
             payload += std::to_string(ssrc);
             payload += R"(}})";
-            std::cout << "Speak packet with payload: " << payload << std::endl;
+            logger->log("Speak packet with payload: " + payload, info);
             websocketpp::lib::error_code ec;
             c.send(hdl, payload, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::cout << "Can not send speak message because: " << ec.message() << std::endl;
+                logger->log("Can not send speak message because: " + ec.message(), error);
             }
             return;
         }
@@ -258,11 +301,11 @@ namespace discordbot {
             //payload += "1";
             payload += std::to_string(ssrc);
             payload += R"(}})";
-            std::cout << "Unspeak packet with payload: " << payload << std::endl;
+            logger->log("Unspeak packet with payload: " + payload, info);
             websocketpp::lib::error_code ec;
             c.send(hdl, payload, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::cout << "Can not send unspeak message because: " << ec.message() << std::endl;
+                logger->log("Can not send unspeak message because: " + ec.message(), error);
             }
             utils::sleep(1000);
             return;
@@ -290,45 +333,53 @@ namespace discordbot {
             std::shared_ptr<int> shared_heartbeat = std::make_shared<int>(heartbeat_interval);                              //share interval 
             std::shared_ptr<int*> shared_seq_num = std::make_shared<int*>(&seq_num);
             std::shared_ptr<client*> shared_client_context = std::make_shared<client*>(c);
+            auto s_log = std::make_shared<discordbot::logger*>(logger);
             //concurrency::cancellation_token this_is_token = *token;
-            return concurrency::create_task([shared_heartbeat, shared_hdl, shared_client_context, shared_seq_num, token, this]
+            return concurrency::create_task([shared_heartbeat, shared_hdl, shared_client_context, shared_seq_num, token, this, s_log]
                 {
                     //check is task is canceled
                     if (token->is_canceled()) {
-                        std::cout << "<Voiceclient> Stop heartbeating";
+                        (*s_log)->log("Stop heartbeat", info);
                         concurrency::cancel_current_task();
                         return;
                     }
                     else {
+                        int i = 0;
                         while (*shared_heartbeat == 50) {
                             //server not provide heartbeat interval wait a bit
                             std::this_thread::sleep_for(std::chrono::milliseconds(*shared_heartbeat));
-                            std::cout << "Wait..." << std::endl;
+                            (*s_log)->log("Wait for heartbeat interval", info);
+                            utils::sleep(500);
+                            i++;
+                            if (i > 5) {
+                                (*s_log)->log("Wait for heatbeat for too long", warning);
+                                break;
+                            }
                         }
                         std::string payload = getHeartBeatPayload(**shared_seq_num);
                         //convert shared shared client pointer to local client 
                         auto client = *shared_client_context;
                         websocketpp::lib::error_code ec;
-                        std::cout << "Heartbeat sent with payload: " << payload << std::endl;
+                        (*s_log)->log("Heartbeat sent with payload: " + payload, info);
                         client->send(*shared_hdl, payload, websocketpp::frame::opcode::text, ec);
                         if (!ec) {
                             while (!ec) {
                                 int localhb = *shared_heartbeat;
                                 while (localhb) {
                                     if (token->is_canceled()) {
-                                        std::cout << "Stop heartbeating...\n";
+                                        (*s_log)->log("Stop heartbeat", info);
                                         concurrency::cancel_current_task();
                                     }
                                     utils::sleep(50);
                                     localhb -= 50;
                                 }
                                 //sleep(*shared_heartbeat);
-                                std::cout << "Heartbeat sent with payload: " << payload << std::endl;
+                                (*s_log)->log("Heartbeat sent with payload: " + payload, info);
                                 client->send(*shared_hdl, payload, websocketpp::frame::opcode::text, ec);
                             }
                         }
                         else {
-                            std::cout << "Heartbeat failed because: " << ec.message() << std::endl;
+                            (*s_log)->log("Heartbeat failed because: " + ec.message(), error);
                         }
                     }
                 });
@@ -343,12 +394,12 @@ namespace discordbot {
             auto s_sn = std::make_shared<int*>(&seq_num);
             auto s_ready = std::make_shared<json*>(&ready);
             auto s_t = std::make_shared<concurrency::task<void>*>(&t);
-            return concurrency::create_task([c, hdl, msg, s_is_restart, s_hbi, s_token, s_sn, s_ready, s_t, s_cts, this] {
-                std::cout << "<Voiceclient> on_message called with hdl: " << hdl.lock().get() << " and message: ";
-                std::cout << (msg->get_payload())
-                    << std::endl;
-                std::cout << "Now begin parsing data"
-                    << std::endl;
+            auto s_log = std::make_shared<discordbot::logger*>(logger);
+            return concurrency::create_task([c, hdl, msg, s_is_restart, s_hbi, s_token, s_sn, s_ready, s_t, s_cts, this, s_log] {
+                std::ostringstream str;
+                str << "on_message called with hdl: " << hdl.lock().get() << " and message: " << msg->get_payload();
+                (*s_log)->log(str.str(), info);
+
                 std::string str_msg = msg->get_payload();
                 json js_msg;
                 js_msg = json::parse(str_msg);
@@ -356,29 +407,29 @@ namespace discordbot {
                 if (js_msg["op"].is_number_integer()) {
                     opcode = js_msg["op"];
                 }
-                std::cout << "Discord opcode: " << std::to_string(opcode) << std::endl;
+                (*s_log)->log("Discord opcode: " + std::to_string(opcode), info);
                 switch (opcode) {
                 case 8: //Hello packet
-                    //std::cout << "Discord opcode: 8\n";
+                    //(*s_log)->log(, info); << "Discord opcode: 8\n";
                     this->hdl = hdl;
                     if (js_msg["d"]["heartbeat_interval"].is_number_float() || js_msg["d"]["heartbeat_interval"].is_number_integer()) {
                         *s_hbi = js_msg["d"]["heartbeat_interval"];
-                        std::cout << "Heartbeat interval: " << *s_hbi << "\n";
+                        (*s_log)->log("Heartbeat interval: " + *s_hbi, info);
                     }
                     else {
-                        std::cout << "Can't parse heartbeart interval from messages:" << msg->get_payload() << std::endl;
-                        std::cout << "Using default heartbeat interval: " << *s_hbi << "\n";
+                        (*s_log)->log("Can't parse heartbeart interval from messages:" + msg->get_payload(), error);
+                        (*s_log)->log("Using default heartbeat interval: " + *s_hbi, error);
                         return;
                     }
                     //cts = concurrency::cancellation_token_source a;
                     **s_t = heartBeat(hdl, c, *s_hbi, *s_is_restart, *s_token, s_sn);
                     break;
                 case 6: //Heartbeat ACK
-                    //std::cout << "Discord opcode: 6\n";
-                    std::cout << "Heartbeat ACK" << std::endl;
+                    //(*s_log)->log(, info); << "Discord opcode: 6\n";
+                    (*s_log)->log({ "Heartbeat ACK" }, info);
                     break;
                 case 2: // Voice ready
-                //std::cout << "Discord opcode: 2\n";
+                //(*s_log)->log(, info); << "Discord opcode: 2\n";
                     udpclient.start(js_msg["d"]["port"], js_msg["d"]["ip"]);
                     udpclient.setssrc(js_msg["d"]["ssrc"]);
                     ssrc = js_msg["d"]["ssrc"];
@@ -387,29 +438,30 @@ namespace discordbot {
                     selectProtocol(hdl, c, udpclient.clientip(), udpclient.clientport());
                     break;
                 case 4: //Session info
-                    //std::cout << "Discord opcode: 4\n";
-                    //std::cout << js_msg["d"]["secret_key"].is_array() << std::endl;
-                    if (js_msg["d"]["encodings"][0]["ssrc"].is_number()) {
+                    //(*s_log)->log(, info); << "Discord opcode: 4\n";
+                    //(*s_log)->log(, info); << js_msg["d"]["secret_key"].is_array() << std::endl;
+                    /*if (js_msg["d"]["encodings"][0]["ssrc"].is_number()) {
                         ssrc = js_msg["d"]["encodings"][0]["ssrc"];
                         udpclient.setssrc(ssrc);
                     }
                     else {
-                        std::cout << "Can not parse ssrc\n";
+                        (*s_log)->log(, info); << "Can not parse ssrc\n";
                         break;
-                    }
+                    }*/
                     if (js_msg["d"]["secret_key"].is_array()) {
-                        std::cout << "Encryt key: " << js_msg["d"]["secret_key"] << std::endl;
-                        //std::cout << "oh let's parse key: ";
+                        //(*s_log)->log("Encryt key: " + (std::array)js_msg["d"]["secret_key"], info);
+                        //(*s_log)->log(, info); << "oh let's parse key: ";
                         for (int i = 0; i < 32; i++) {
                             key.push_back(js_msg["d"]["secret_key"][i]);
-                            //std::cout << i;
+                            //(*s_log)->log(, info); << i;
                         }
                         state = true;
                         connect = true;
+                        unlockPusher();
                         break;
                     }
                     else {
-                        std::cout << "Can not parse secret key \n";
+                        (*s_log)->log({ "Can not parse secret key" }, error);
                         break;
                     }
                 }
@@ -417,9 +469,11 @@ namespace discordbot {
         }
 
         void on_close(client* c, websocketpp::connection_hdl hdl) {
-            c->get_alog().write(websocketpp::log::alevel::app, "<Voiceclient> Connection Closed");
-            std::cout << "<Voiceclient> Connection closed on hdl: " << hdl.lock().get() << std::endl;
-            std::cout << "Connection close, performing cleanup\n";
+            c->get_alog().write(websocketpp::log::alevel::app, "[on_close] Connection Closed");
+            std::ostringstream str;
+            str << "[on_close] Connection closed on hdl: " << hdl.lock().get();
+            logger->log(str.str(), notification);
+            logger->log("Connection close, performing cleanup", info);
             state = false; //lock pusher
             endpoint = "";
             guildid = "";
@@ -430,27 +484,25 @@ namespace discordbot {
 
             cts.cancel();
             if (connect) {
-                std::cout << "Waiting for heartbeat thread to exit\n";
+                logger->log({ "Waiting for heartbeat thread to exit" }, info);
                 t.wait();
             }
 
 
             if (running) {
-                std::string str = "Stop player\n";
-                std::cout << str;
-                p_cts.cancel();
+                logger->log({ "Stop player" }, info);
+                p_cts.cancel(); 
                 playing.wait();
+                utils::sleep(500);
                 p_cts = concurrency::cancellation_token_source();
                 p_token = p_cts.get_token();
             }
             else {
-                std::string str = "Player is not running\n";
-                std::cout << str;
+                logger->log({ "Player is not running" }, info);
             }
 
-            std::cout << "Close udp socket\n";
+            logger->log({ "Close udp socket" }, info);
             udpclient.cleanup();
-            //pusher.wait();
 
             //reset token
             cts = concurrency::cancellation_token_source();
@@ -466,6 +518,7 @@ namespace discordbot {
         void clear() {
             std::queue<std::string> empty;
             std::swap(selfqueue, empty);
+            logger->log({ "Queue cleared" }, info);
         }
 
         //skip current playing track by cancel playing task
@@ -481,13 +534,13 @@ namespace discordbot {
         //stop operation, clear self queue and disconnect
         void leave() {
             clear();
-            cleanup();
+            //cleanup();
         }
 
         //cancel all operation
-        void cleanup() {
+        /*void cleanup() {
             if (0) {
-                std::cout << "Connection close, performing cleanup\n";
+                logger.log(, info); << "Connection close, performing cleanup\n";
                 state = false; //lock pusher
                 endpoint = "";
                 guildid = "";
@@ -498,14 +551,14 @@ namespace discordbot {
 
                 cts.cancel();
                 if (connect) {
-                    std::cout << "Waiting for heartbeat thread to exit\n";
+                    logger.log(, info); << "Waiting for heartbeat thread to exit\n";
                     t.wait();
                 }
 
                 
                 if (running) {
                     std::string str = "Stop player\n";
-                    std::cout << str;
+                    logger.log(, info); << str;
                     p_cts.cancel();
                     playing.wait();
                     p_cts = concurrency::cancellation_token_source();
@@ -513,10 +566,10 @@ namespace discordbot {
                 }
                 else {
                     std::string str = "Player is not running\n";
-                    std::cout << str;
+                    logger.log(, info); << str;
                 }
 
-                std::cout << "Close udp socket\n";
+                logger.log(, info); << "Close udp socket\n";
                 udpclient.cleanup();
                 //pusher.wait();
 
@@ -529,33 +582,33 @@ namespace discordbot {
                 websocketpp::lib::error_code ec;
                 c.ping(hdl, "", ec);
                 if (ec) {
-                    std::cout << "Handle ping failed because: " << ec.message() << std::endl;
+                    logger.log(, info); << "Handle ping failed because: " << ec.message() << std::endl;
                     return;
                 }
                 else {
-                    std::cout << "Connection is still alive, killing it\n";
+                    logger.log(, info); << "Connection is still alive, killing it\n";
                 }
                 client::connection_ptr con_ptr = c.get_con_from_hdl(hdl);
                 con_ptr->close(websocketpp::close::status::service_restart, "", ec);
                 if (ec) {
-                    std::cout << "Can not close connection because: " << ec.message() << std::endl;
+                    logger.log(, info); << "Can not close connection because: " << ec.message() << std::endl;
                 }
                 while (connect) {
-                    std::cout << "Waiting for close handshake\n";
+                    logger.log(, info); << "Waiting for close handshake\n";
                     utils::sleep(50);
                 }
 
                 //connect = false;
             }
             else {
-                std::cout << "No connection exist. Skip clean up\n";
+                //logger.log(, info); << "No connection exist. Skip clean up\n";
                 return;
             }
-        }
+        }*/
         
         void start(client* gatewayclient, websocketpp::connection_hdl gatewayhdl, std::string uri, std::string guildid, std::string _token, std::string session, std::string user_id) {
-            sodium_init();
             auto shared_running = std::make_shared<bool*>(&running);
+            auto shared_pusher_lock = std::make_shared<bool*>(&is_pusher_locked);
             this->endpoint = uri;
             this->guildid = guildid;
             this->_token = _token;
@@ -565,10 +618,10 @@ namespace discordbot {
             this->gatewayhdl = gatewayhdl;
             uri = R"(wss://)" + uri + R"(/?v=4)";
             websocketpp::lib::error_code ec;
-            std::cout << "Voice connection established to: " << uri << std::endl;
+            logger->log("Voice connection established to: " + uri, notification);
             client::connection_ptr con_ptr = c.get_connection(uri, ec);
             if (ec) {
-                std::cout << "Could not create connection because: " << ec.message() << std::endl;
+                logger->log("Could not create connection because: " + ec.message(), error);
                 return;
             }
 
@@ -578,27 +631,42 @@ namespace discordbot {
             c.reset();
             c.connect(con_ptr);
             if (first_time) {
-                std::string str = "First time launch voiceclient, start endpoint and pusher\n";
-                std::cout << str;
+                logger->log("First time launch voiceclient, start endpoint and pusher", notification);
                 first_time = false;
-                concurrency::create_task([this] {
+                auto s_log = std::make_shared<discordbot::logger*>(logger);
+                concurrency::create_task([this, s_log] {
                     c.run();
+                    (*s_log)->log({"Endpoint created"}, info);
                     });
-                pusher = concurrency::create_task([this, shared_running] {
+                pusher = concurrency::create_task([this, shared_running, shared_pusher_lock, s_log] {
                     while (1) {
-                        if (selfqueue.size() > 0 && state && !(**shared_running)) {
-                            std::cout << "[Pusher] Push video " << selfqueue.front() << std::endl;
+                        int i = 0;
+                        if (selfqueue.size() > 0 && state && !(**shared_running) && !(**shared_pusher_lock)) {
+                            i = 1;
+                            (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
                             this->playing = play(selfqueue.front());
                             selfqueue.pop();
+                            (*s_log)->log({ "[Pusher] Sleep 10000ms" }, info);
+                            utils::sleep(10000);
+                            (*s_log)->log({ "[Pusher] Player playing, wait for player" }, info);
                             while (**shared_running) {
-                                utils::sleep(100);
+                                utils::sleep(1000);
                             }
-                            utils::sleep(100);
+                            (*s_log)->log({ "[Pusher] No longer wait for player" }, info);
+                            utils::sleep(1000);
                         }
                         else {
-                            utils::sleep(100);
+                            if (i == 1) {
+                                i = 0;
+                                (*s_log)->log({ "[Pusher] Pusher sleep" }, info);
+                                if (selfqueue.size() <= 0) (*s_log)->log({ "[Pusher] Queue Size <= 0" }, info);
+                                if (state == false) (*s_log)->log({ "[Pusher] State = false" }, info);
+                                if (**shared_running) (*s_log)->log({ "Player is running" }, info);
+                                if (**shared_pusher_lock) (*s_log)->log({ "Pusher locked" }, info);
+                                utils::sleep(1000);
+                            }
                         }
-                        utils::sleep(100);
+                        utils::sleep(1000);
                     }
                 });
             } 
@@ -608,13 +676,14 @@ namespace discordbot {
             running = true;
             auto shared_token = std::make_shared<concurrency::cancellation_token*>(&p_token);
             auto shared_running = std::make_shared<bool*>(&running);
-            return concurrency::create_task([this, id, shared_token, shared_running] {
+            auto s_log = std::make_shared<discordbot::logger*>(logger);
+            return concurrency::create_task([this, id, shared_token, shared_running, s_log] {
                 speak();
                 std::string title = utils::youtubeGetTitle(id);
                 std::string payload = "Now playing:\n";
                 payload = payload + "\"" + title + "\"";
                 utils::sendMsg(payload, default_channel);
-                printf("creating opus encoder\n");
+                (*s_log)->log("Create audio source", info);
                 audio* source = new audio(id);
                 const unsigned short FRAME_MILLIS = 20;
                 const unsigned short FRAME_SIZE = 960;
@@ -623,25 +692,35 @@ namespace discordbot {
                 const unsigned int BITRATE = 80000;
                 #define MAX_PACKET_SIZE FRAME_SIZE * 5
                 int error;
+                (*s_log)->log("Creating opus encoder", info);
+                (*s_log)->log("FRAME_MILLIS: " + std::to_string(FRAME_MILLIS), info);
+                (*s_log)->log("FRAME_SIZE: " + std::to_string(FRAME_SIZE), info);
+                (*s_log)->log("SAMPLE_RATE: " + std::to_string(SAMPLE_RATE), info);
+                (*s_log)->log("CHANNELS: " + std::to_string(CHANNELS), info);
+                (*s_log)->log("BITRATE: " + std::to_string(BITRATE), info);
                 OpusEncoder* encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, OPUS_APPLICATION_AUDIO, &error);
                 if (error < 0) {
-                    throw "failed to create opus encoder: " + std::string(opus_strerror(error));
+                    (*s_log)->log("Failed to create opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
+                    throw "Failed to create opus encoder: " + std::string(opus_strerror(error));
                 }
-                error = opus_encoder_ctl(encoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
-                if (error < 0) {
-                    throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
-                }
+                //error = opus_encoder_ctl(encoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
+                //if (error < 0) {
+                //    throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+                //}
                 error = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(BITRATE));
                 if (error < 0) {
-                    throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+                    (*s_log)->log("Failed to set bitrate for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
+                    throw "Failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
                 }
                 error = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(expected_packet_loss));
                 if (error < 0) {
-                    throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+                    (*s_log)->log("Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
+                    throw "Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error));
                 }
 
                 if (sodium_init() == -1) {
-                    throw "libsodium initialisation failed";
+                    (*s_log)->log("Libsodium initialisation failed", severity_level::error);
+                    throw "Libsodium initialisation failed";
                 }
 
                 int num_opus_bytes;
@@ -660,19 +739,20 @@ namespace discordbot {
 
                 timer_event* run_timer = new timer_event();
                 run_timer->set();
-                concurrency::create_task([run_timer, this, shared_token] {
+                concurrency::create_task([run_timer, this, shared_token, s_log] {
                     while (run_timer->get_is_set()) {
                         speak();
+                        (*s_log)->log("Speak sent", info);
                         int i = 0;
                         while (i < 15) {
                             utils::sleep(1000);
                             if (run_timer->get_is_set() == false) {
-                                std::cout << "Stop sending speak packet due to turn off\n";
+                                (*s_log)->log("Speak packet sender canceled", info);
                                 concurrency::cancel_current_task();
                                 return;
                             }
                             if ((*shared_token)->is_canceled()) {
-                                std::cout << "Stop sending speak packet due to cancel\n";
+                                (*s_log)->log("Speak packet sender canceled", info);
                                 concurrency::cancel_current_task();
                                 return;
                             }
@@ -680,7 +760,7 @@ namespace discordbot {
                     }});
                 std::deque<std::string>* buffer = new std::deque<std::string>();
                 auto shared_offset = std::make_shared<long long*>(&offset);
-                auto timer = concurrency::create_task([run_timer, this, buffer, FRAME_MILLIS, shared_token, shared_offset, shared_running] {
+                auto timer = concurrency::create_task([run_timer, this, buffer, FRAME_MILLIS, shared_token, shared_offset, shared_running, s_log] {
                     while (run_timer->get_is_set() || buffer->size() > 0) {
                         utils::sleep(5 * FRAME_MILLIS);
                         **shared_running = true;
@@ -688,13 +768,13 @@ namespace discordbot {
                         auto start = boost::chrono::high_resolution_clock::now();
                         while (buffer->size() > 0) {
                             if (udpclient.send(buffer->front()) != 0) {
-                                std::cout << "Stop sendding voice data due to udp error\n";
+                                (*s_log)->log("UDP error, stop player", severity_level::error);
                                 **shared_running = false;
                                 return;
                             }
                             buffer->pop_front();
                             if ((*shared_token)->is_canceled()) {
-                                std::cout << "Stop sending voice data due to cancel\n";
+                                (*s_log)->log("Player  canceled", info);
                                 **shared_running = false;
                                 concurrency::cancel_current_task();
                             }
@@ -720,13 +800,14 @@ namespace discordbot {
                         cached_expected_packet_loss = expected_packet_loss;
                         error = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(expected_packet_loss));
                         if (error < 0) {
-                            throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+                            (*s_log)->log("Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
+                            throw "Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error));
                         }
                     }
                     if (source->read((char*)pcm_data, FRAME_SIZE * CHANNELS * 2) != true)
                         break;
                     if ((*shared_token)->is_canceled()) {
-                        std::cout << "Stop encoding due to cancel\n";
+                        (*s_log)->log("Encoder canceled", info);
                         break;
                     }
 
@@ -734,6 +815,7 @@ namespace discordbot {
                     //in_data = (opus_int16*)pcm_data;
                     num_opus_bytes = opus_encode(encoder, in_data, FRAME_SIZE, opus_data.data(), MAX_PACKET_SIZE);
                     if (num_opus_bytes <= 0) {
+                        (*s_log)->log("failed to encode frame: " + std::string(opus_strerror(num_opus_bytes)), severity_level::error);
                         throw "failed to encode frame: " + std::string(opus_strerror(num_opus_bytes));
                     }
 
@@ -758,7 +840,7 @@ namespace discordbot {
 
                     _sequence++;
                     _timestamp += SAMPLE_RATE / 1000 * FRAME_MILLIS; //48000Hz / 1000 * 20(ms)
-
+                    
                     if (_sequence < 10) { //skip first 10 frames
                         continue;
                     }
@@ -778,18 +860,20 @@ namespace discordbot {
                     for (unsigned int i = 0; i < packet.size(); i++) {
                         msg[i] = packet[i];
                     }
-                    totalsize += msg.length();
+                    totalsize += msg.length();                    
                     buffer->push_back(msg);
                 }
-
-                std::cout << "Total size: " << totalsize << std::endl;
+                (*s_log)->log("Total size: " + std::to_string(totalsize), info);
+                (*s_log)->log("Unset timer", info);
                 run_timer->unset();
+                (*s_log)->log("Wait for player exit", info);
                 timer.wait();   
                 unspeak();
+                (*s_log)->log("Unspeack packet sent", info);
                 **shared_running = false;
                 delete run_timer;
                 delete buffer;
-
+                (*s_log)->log("Destroy encoder", info);
                 opus_encoder_destroy(encoder);
 
                 delete[] pcm_data;
@@ -797,8 +881,7 @@ namespace discordbot {
                 });
         }
 
-        concurrency::task<void> disconnect(std::string guildid, client* c, websocketpp::connection_hdl hdl) {
-            return concurrency::create_task([this, guildid, c, hdl] {
+        void disconnect(std::string guildid, client* c, websocketpp::connection_hdl hdl) {
                 std::string payload = R"({"op": 4,"d": {"guild_id": ")";
                 payload += guildid;
                 payload += R"(","channel_id": ")";
@@ -806,11 +889,14 @@ namespace discordbot {
                 payload += R"(","self_mute": true,"self_deaf": true}})";
                 websocketpp::lib::error_code ec;
                 c->send(hdl, payload, websocketpp::frame::opcode::text, ec);
+                logger->log({ "Disconnect packet sent" }, info);
                 return;
-                });
         }
 
-        voiceclient() {
+        voiceclient(std::string guildid) {
+            this->guildid = guildid;
+            std::string logfile = "voice_" + guildid;
+            this->logger = new discordbot::logger(logfile);
             //client c;
             //uri = R"(wss://)" + uri;
             try {
@@ -828,11 +914,13 @@ namespace discordbot {
                 c.start_perpetual();
             }
             catch (websocketpp::exception const& e) {
-                std::cout << e.what() << std::endl;
+                logger->log({ e.what() }, error);
             }
         }
     };
     class gatewayclient {
+    private:
+        logger* logger;
     public:
         std::unordered_map<std::string, std::unordered_map<std::string, querryqueue*>> mainqueue; //[guild_id][user_id] -> querrydata
         std::unordered_map<std::string, voiceclient*> voicegroup;  // guild id ~~ voice endpoint
@@ -861,18 +949,18 @@ namespace discordbot {
             }
         }
 
-        static void auth(websocketpp::connection_hdl hdl, client* c) {
+        void auth(websocketpp::connection_hdl hdl, client* c) {
             websocketpp::lib::error_code ec;
             std::string auth_str = "{\"op\":2,\"d\":{\"token\":\"ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss\",\"intents\":1664,\"properties\":{\"$os\":\"window\",\"$browser\":\"\",\"$device\":\"\"}}}";
-            std::cout << "Authorizing...\n";
             c->send(hdl, auth_str, websocketpp::frame::opcode::text, ec);
+            logger->log({ "Authorize packet sent" }, info);
             if (ec) {
-                std::cout << "Authorization failed because: " << ec.message() << std::endl;
+                logger->log("Authorization failed because: " + ec.message(), error);
             }
             return;
         }
 
-        static void resume(discordbot::gatewayclient* a, websocketpp::connection_hdl hdl, client* c) {
+        void resume(discordbot::gatewayclient* a, websocketpp::connection_hdl hdl, client* c) {
             websocketpp::lib::error_code ec;
             json resume;
             resume["op"] = 6;
@@ -886,15 +974,14 @@ namespace discordbot {
                             "session_id": "session_id_i_stored",
                             "seq": 1337
                         }
-                    })";*/
-            std::cout << "Resuming...\n";
-            std::cout << "Resume payload:" << resume.dump() << std::endl;
+                    })";*/         
             c->send(hdl, resume.dump(), websocketpp::frame::opcode::text, ec);
             if (ec) {
-                std::cout << "Resume failed because: " << ec.message() << std::endl;
+                logger->log("Resume failed because: " + ec.message(), error);
                 return;
             }
-            a->is_websocket_restart = false; //reset flag
+            logger->log("Resume packet sent with payload: " + resume.dump(), info);
+            is_websocket_restart = false; //reset flag
             return;
         }
 
@@ -913,24 +1000,31 @@ namespace discordbot {
             std::shared_ptr<int> shared_heartbeat = std::make_shared<int>(heartbeat_interval);                              //share interval 
             std::shared_ptr<int*> shared_seq_num = std::make_shared<int*>(&seq_num);
             std::shared_ptr<client*> shared_client_context = std::make_shared<client*>(c);
+            auto s_log = std::make_shared<discordbot::logger*>(logger);
             concurrency::cancellation_token this_is_token = *token;
-            return concurrency::create_task([shared_heartbeat, shared_hdl, shared_client_context, shared_seq_num, this_is_token]
+            return concurrency::create_task([shared_heartbeat, shared_hdl, shared_client_context, shared_seq_num, this_is_token, s_log]
                 {
                     //check is task is canceled
                     if (this_is_token.is_canceled()) {
                         concurrency::cancel_current_task();
                     }
                     else {
+                        int i = 0;
                         while (*shared_heartbeat == 50) {
                             //server not provide heartbeat interval wait a bit
                             std::this_thread::sleep_for(std::chrono::milliseconds(*shared_heartbeat));
-                            std::cout << "Wait..." << std::endl;
+                            (*s_log)->log("Wait for heartbeat interval", info);
+                            i++;
+                            utils::sleep(500);
+                            if (i > 5) {
+                                (*s_log)->log("Wait for heartbeat interval for too long", error);
+                                break;
+                            }
                         }
 
                         //convert shared shared client pointer to local client 
                         auto client = *shared_client_context;
                         websocketpp::lib::error_code ec;
-                        std::cout << "Heartbeat sent. " << ec.message() << std::endl;
                         std::string payload = gatewayclient::getHeartBeatPayload(**shared_seq_num);
                         client->send(*shared_hdl, payload, websocketpp::frame::opcode::text, ec);
                         if (!ec) {
@@ -938,7 +1032,7 @@ namespace discordbot {
                                 int localhb = *shared_heartbeat;
                                 while (localhb) {
                                     if (this_is_token.is_canceled()) {
-                                        std::cout << "Stop heartbeating...\n";
+                                        (*s_log)->log("Heartbeat canceled", info);
                                         concurrency::cancel_current_task();
                                     }
                                     utils::sleep(50);
@@ -947,11 +1041,11 @@ namespace discordbot {
                                 //sleep(*shared_heartbeat);
                                 payload = gatewayclient::getHeartBeatPayload(**shared_seq_num);
                                 client->send(*shared_hdl, payload, websocketpp::frame::opcode::text, ec);
-                                std::cout << "Heartbeat sent with payload: " << payload << std::endl;
+                                (*s_log)->log("Heartbeat sent with payload: " + payload, info);
                             }
                         }
                         else {
-                            std::cout << "Heartbeat failed because: " << ec.message() << std::endl;
+                            (*s_log)->log("Heartbeat failed because: " + ec.message(), error);
                         }
                     }
                 });
@@ -965,13 +1059,11 @@ namespace discordbot {
             auto s_sn = std::make_shared<int*>(&seq_num);
             auto s_ready = std::make_shared<json*>(&ready);
             auto s_t = std::make_shared<concurrency::task<void>*>(&t);
-            return concurrency::create_task([c, hdl, msg, s_is_restart, s_hbi, s_token, s_sn, s_ready, s_t, s_cts, this] {
-                std::cout << "<Gateway> on_message called with hdl: " << hdl.lock().get()
-                    << " and message: ";
-                std::cout << (msg->get_payload())
-                    << std::endl;
-                std::cout << "Now begin parsing data"
-                    << std::endl;
+            auto s_log = std::make_shared<discordbot::logger*>(logger);
+            return concurrency::create_task([c, hdl, msg, s_is_restart, s_hbi, s_token, s_sn, s_ready, s_t, s_cts, this, s_log] {
+                std::ostringstream str;
+                str << "on_message called with hdl: " << hdl.lock().get() << " and message: " << msg->get_payload();
+                (*s_log)->log(str.str(), info); 
                 std::string str_msg = msg->get_payload();
                 json js_msg;
                 js_msg = json::parse(str_msg);
@@ -987,36 +1079,36 @@ namespace discordbot {
                     utils::restart(hdl, c, *s_cts, *s_token, *s_t);
                     break;
                 case 10: //Hello packet
-                    std::cout << "Discord opcode: 10\n";
+                    (*s_log)->log("Discord opcode: 10", info);
                     if (js_msg["d"]["heartbeat_interval"].is_number_integer()) {
                         *s_hbi = js_msg["d"]["heartbeat_interval"];
-                        std::cout << "Heartbeat interval: " << *s_hbi << "\n";
+                        (*s_log)->log("Heartbeat interval: " + std::to_string(*s_hbi), info);
                     }
                     else {
-                        std::cout << "Can't parse heartbeart interval from messages:" << msg->get_payload() << std::endl;
-                        std::cout << "Using default heartbeat interval: " << *s_hbi << "\n";
+                        (*s_log)->log("Can't parse heartbeart interval from messages:" + msg->get_payload(), error);
+                        (*s_log)->log("Using default heartbeat interval: " + std::to_string(*s_hbi), error);
                     }
                     //cts = concurrency::cancellation_token_source a;
                     **s_t = heartBeat(hdl, c, *s_hbi, *s_is_restart, *s_token);
                     break;
                 case 11: //Heartbeat ACK
-                    std::cout << "Discord opcode: 11\n";
-                    std::cout << "Heartbeat ACK" << std::endl;
+                    (*s_log)->log("Discord opcode: 11", info);
+                    (*s_log)->log("Heartbeat ACK", info);
                     break;
                 case 7: //Request reconnect
                     **s_is_restart = true;
                     utils::restart(hdl, c, *s_cts, *s_token, *s_t);
                     break;
                 case 0:
-                    std::cout << "Discord opcode: 0\n";
-                    std::cout << "Discord event name:" << js_msg["t"] << "\n";
+                    (*s_log)->log("Discord opcode: 0", info);
+                    (*s_log)->log("Discord event name:" + (std::string)js_msg["t"], info);
 
                     //update SEQUENCE NUMBER
                     if (js_msg["s"].is_number_integer()) {
                         **s_sn = js_msg["s"];
                     }
                     else {
-                        std::cout << "Can not parse sequense number from message:" << msg->get_payload() << std::endl;
+                        (*s_log)->log("Can not parse sequense number from message:" + msg->get_payload(), error);
                     }
 
 
@@ -1027,7 +1119,7 @@ namespace discordbot {
                         event = js_msg["t"];
                     }
                     else {
-                        std::cout << "Can not parse discord event from message:" << msg->get_payload() << std::endl;
+                        (*s_log)->log("Can not parse discord event from message:" + msg->get_payload(), error);
                     }
 
                     if (event == R"(READY)") { //receive ready packet 
@@ -1040,23 +1132,23 @@ namespace discordbot {
                         if (js_msg["d"]["user_id"].is_string()) {
                             userid = js_msg["d"]["user_id"];
                         }
-                        else std::cout << "Can not parse userid from message: " << msg->get_payload() << std::endl;
+                        else (*s_log)->log("Can not parse userid from message: " + msg->get_payload(), error);
                         std::string guild = "";
                         if (js_msg["d"]["guild_id"].is_string()) {
                             guild = js_msg["d"]["guild_id"];
                         }
-                        else std::cout << "Can not parse guild id from message:" << msg->get_payload() << std::endl;
+                        else (*s_log)->log("Can not parse guild id from message:" + msg->get_payload(), error);
                         std::string channel = "";
                         if (js_msg["d"]["channel_id"].is_string()) {
                             channel = js_msg["d"]["channel_id"].is_string();
                         }
                         if (userid == ready["d"]["user"]["id"] && channel == "") { //disconnect packet
                             if (voicegroup.find(guild) != voicegroup.end()) { //endpoint exist
-                                voicegroup[guild]->cleanup();
+                                //voicegroup[guild]->cleanup();
                             }
                         }
                         usergroup[guild][userid] = new userinfo;
-                        usergroup[guild][userid]->update(js_msg);
+                        usergroup[guild][userid]->update(js_msg, logger);
                         break;
                     }
                     if (event == R"(VOICE_SERVER_UPDATE)") {
@@ -1067,19 +1159,18 @@ namespace discordbot {
                             _token = js_msg["d"]["token"];
                             guildid = js_msg["d"]["guild_id"];
                             endpoint = js_msg["d"]["endpoint"];
-                            std::cout << "Successful get token id: " << _token << std::endl;
-                            std::cout << "Successful get guild id: " << guildid << std::endl;
-                            std::cout << "Successful get endpoint: " << endpoint << std::endl;
+                            (*s_log)->log("Successful get token id: " + _token, info);
+                            (*s_log)->log("Successful get guild id: " + guildid, info);
+                            (*s_log)->log("Successful get endpoint: " + endpoint, info);
                         }
                         else {
-                            std::cout << "Can not parse: token, guild id, endpoint \n";
+                            (*s_log)->log("Can not parse: token, guild id, endpoint ", error);
                             break;
                         }
                         int i = 1;
                         std::string selfid = ready["d"]["user"]["id"];                  
                         while (1) {
-                            std::string out = "Waiting for session id " + std::to_string(i) + "\n";
-                            std::cout << out;
+                            (*s_log)->log("Waiting for session id " + std::to_string(i), info);
                             if (usergroup.find(guildid) == usergroup.end()) { 
                             }
                             else {
@@ -1087,7 +1178,7 @@ namespace discordbot {
                                 }
                                 else {
                                     if (usergroup[guildid][selfid]->sessionid != "") {
-                                        std::cout << "Found valid session id: " << usergroup[guildid][selfid]->sessionid << std::endl;
+                                        (*s_log)->log("Found valid session id: " + usergroup[guildid][selfid]->sessionid, info);
                                         break;
                                     }
                                 }
@@ -1100,20 +1191,22 @@ namespace discordbot {
                             }
                         }
                         if (i > 5) {
-                            std::cout << "Fail to wait for session id\n";
+                            (*s_log)->log("Fail to wait for session id\n", error);
                             break;
                         }
                         else {
                             if (voicegroup.find(guildid) == voicegroup.end()) { //not exist
-                                std::cout << "Start voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
-                                voicegroup[guildid] = new voiceclient;
+                                (*s_log)->log("Start voice connection with endpoint: " + endpoint + ", guild ID: " + guildid + ", session ID: " + usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, info);
+                                voicegroup[guildid] = new voiceclient(guildid);
+                                voicegroup[guildid]->setCurrentVoiceChannel(usergroup[guildid][selfid]->get_voice_channel_id());
                                 voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][selfid]->sessionid, selfid);
                             }
                             else { //exist
                                 //stop old connection and start a new connection
-                                std::cout << "Exist voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
-                                voicegroup[guildid]->cleanup();
-                                voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, ready["d"]["user"]["id"]);
+                                (*s_log)->log("Exist voice connection with endpoint: " + endpoint + ", guild ID: " + guildid + ", session ID: " + usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, info);
+                                //voicegroup[guildid]->cleanup();
+                                voicegroup[guildid]->setCurrentVoiceChannel(usergroup[guildid][selfid]->get_voice_channel_id());
+                                voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, selfid);
                             }
                         }
                         break;
@@ -1123,42 +1216,46 @@ namespace discordbot {
                         std::string channel = ""; //CHANNEL ID
                         if (js_msg["d"]["channel_id"].is_string()) {
                             channel = js_msg["d"]["channel_id"];
+                            (*s_log)->log("Parsed channel id from message, channel id:" + channel, info);
                         }
                         else {
-                            std::cout << "Can not parse channel id from message:" << msg->get_payload() << std::endl;
+                            (*s_log)->log("Can not parse channel id from message:" + msg->get_payload(), error);
                         }
 
                         std::string guild = ""; //GUILD ID
                         if (js_msg["d"]["guild_id"].is_string()) {
                             guild = js_msg["d"]["guild_id"];
+                            (*s_log)->log("Parsed guild id from message, guild id:" + guild, info);
                         }
                         else {
-                            std::cout << "Can not parse guild id from message:" << msg->get_payload() << std::endl;
+                            (*s_log)->log("Can not parse guild id from message:" + msg->get_payload(), error);
                         }
 
                         std::string content = ""; //MSG CONTENT
                         if (js_msg["d"]["content"].is_string()) {
                             content = js_msg["d"]["content"];
+                            (*s_log)->log("Parsed message content from message, message content:" + content, info);
                         }
                         else {
-                            std::cout << "Can not parse content from message:" << msg->get_payload() << std::endl;
+                            (*s_log)->log("Can not parse content from message:" + msg->get_payload(), error);
                         }
 
                         std::string userid = ""; //AUTHOR ID
                         if (js_msg["d"]["author"]["id"].is_string()) {
                             userid = js_msg["d"]["author"]["id"];
+                            (*s_log)->log("Parsed author id from message, author id:" + userid, info);
                         }
-                        else std::cout << "Can not parse userid from message: " << msg->get_payload() << std::endl;
+                        else (*s_log)->log("Can not parse userid from message: " + msg->get_payload(), error);
 
                         if (js_msg["d"]["mentions"][0]["id"] == (**s_ready)["d"]["user"]["id"]) {  //mention
                             utils::sendMsg("Why mention me? I won't show you my prefix is ?", channel);
-                            std::cout << js_msg["d"]["mentions"][0]["id"] << std::endl;
-                            std::cout << (**s_ready)["d"]["user"]["id"] << std::endl;
+                            (*s_log)->log(js_msg["d"]["mentions"][0]["id"], info);
+                            (*s_log)->log((**s_ready)["d"]["user"]["id"], info);
                             break;
                         }
                         if (content == "ping" || content == "Ping") { //ping command
                             int RTT = utils::ping("162.159.136.232"); //discord IP: 162.159.136.232
-                            std::cout << "RTT: " << std::to_string(RTT) << std::endl;
+                            (*s_log)->log("RTT: " + std::to_string(RTT), info);
                             std::string msg = "Pong! ";
                             msg += std::to_string(RTT);
                             msg += "ms";
@@ -1187,20 +1284,20 @@ namespace discordbot {
                                     if (usergroup[guild][userid]->get_voice_channel_id() != "") {
                                         websocketpp::lib::error_code ec;
                                         if (voicegroup.find(guild) == voicegroup.end()) { //not exist
-                                            //std::cout << "Start voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
-                                            voicegroup[guild] = new voiceclient;
-                                            voicegroup[guild]->set_default_channel(channel);
+                                            //(*s_log)->log(, info); << "Start voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
+                                            voicegroup[guild] = new voiceclient(guild);
+                                            voicegroup[guild]->setDefaultChannel(channel);
                                             //voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][selfid]->sessionid, selfid);
                                         }
                                         else { //exist
                                             //stop old connection and start a new connection
-                                            //std::cout << "Exist voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
-                                            voicegroup[guild]->set_default_channel(channel);
+                                            //(*s_log)->log(, info); << "Exist voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
+                                            voicegroup[guild]->setDefaultChannel(channel);
                                             //voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, ready["d"]["user"]["id"]);
                                         }
                                         c->send(hdl, getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
                                         if (ec) {
-                                            std::cout << "Can not send voice state update payload because: " << ec.message();
+                                            (*s_log)->log("Can not send voice state update payload because: " + ec.message(), error);
                                             break;
                                         }
                                     }
@@ -1233,30 +1330,9 @@ namespace discordbot {
                                 std::string payload = getVoiceStateUpdatePayload(guild, "null");
                                 c->send(hdl, payload, websocketpp::frame::opcode::text);
                                 if (ec) {
-                                    std::cout << "Cannot send voice update payload because: " << ec.message() << std::endl;
-                                    break;
+                                    (*s_log)->log("Cannot send voice update payload because: " + ec.message(), error);
                                 }
                             }
-                            //else if (voicegroup[guild]->connect == false) {
-                            //    break;
-                            //} else {
-                            //    //voicegroup[guild]->cleanup();
-                            //    ///*while (voicegroup[guild]->connect == true) {
-                            //    //    std::cout << "Waiting for connection close\n";
-                            //    //    utils::sleep(100);
-                            //    //}*/
-                            //    //if (voicegroup[guild]->connect == false) {
-                            //    //    websocketpp::lib::error_code ec;
-                            //    //    std::string payload = getVoiceStateUpdatePayload(guild, "null");
-                            //    //    c->send(hdl, payload, websocketpp::frame::opcode::text);
-                            //    //    if (ec) {
-                            //    //        std::cout << "Cannot send voice update payload because: " << ec.message() << std::endl;
-                            //    //        break;
-                            //    //    }
-                            //    //    payload = "Okela";
-                            //    //    utils::sendMsg(payload, channel);
-                            //    //}
-                            //}
                             break;
                         }
 
@@ -1274,22 +1350,26 @@ namespace discordbot {
                                     if (temp->channelid == channel && temp->guildid == guild) { //channel and guild match + userid match -> match
                                         if (voicegroup.find(guild) == voicegroup.end()) { //voice endpoint not exist
                                             break;
-                                            std::cout << "Endpoint for guild id " << guild << " not exist\n";
+                                            (*s_log)->log("Endpoint for guild id " + guild + " not exist\n", info);
                                         }
                                         else {
                                             if (usergroup.find(guild) != usergroup.end()) {
                                                 if (usergroup[guild].find(userid) != usergroup[guild].end()) {
                                                     if (usergroup[guild][userid]->get_voice_channel_id() != "") {
-                                                        voicegroup[guild]->selfqueue.push(temp->data[selected-1]);
-                                                        std::cout << "User " << userid << " selected video " << temp->data[selected - 1] << std::endl;
-                                                        websocketpp::lib::error_code ec;
-                                                        /*if (voicegroup[guild]->is_connect() && !(voicegroup[guild]->is_running())) {
-                                                            std::cout << "Voice client already connected, and player is running this should be a change channel request. Double push.\n";
+                                                        if (usergroup[guild][userid]->get_voice_channel_id() != voicegroup[guild]->getCurrentVoiceChannel()) {
+                                                            (*s_log)->log("User request music is in different voice channel with target voice endpoint, expected change", info);
+                                                            voicegroup[guild]->lockPusher();
                                                             voicegroup[guild]->selfqueue.push(temp->data[selected - 1]);
-                                                        }*/
+                                                            (*s_log)->log("User " + userid + " selected video " + temp->data[selected - 1], info);
+                                                        }
+                                                        else {
+                                                            voicegroup[guild]->selfqueue.push(temp->data[selected - 1]);
+                                                            (*s_log)->log("User " + userid + " selected video " + temp->data[selected - 1], info);
+                                                        }
+                                                        websocketpp::lib::error_code ec;
                                                         c->send(hdl, getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
                                                         if (ec) {
-                                                            std::cout << "can not send voice state update payload because: " << ec.message() << std::endl;
+                                                            (*s_log)->log("Can not send voice state update payload because: " + ec.message(), error);
                                                         }
                                                     }
                                                     else {
@@ -1319,18 +1399,13 @@ namespace discordbot {
                         if (utils::isStartWith(content, "?p")) {
                             //parse string
                             if (voicegroup.find(guild) == voicegroup.end())  {
-                                std::string str = "Create voice endpoint for guild: " + guild + "\n";
-                                std::cout << str;
-                                voicegroup[guild] = new voiceclient;
-                                str = "Set default channel of guild " + guild + " to " + channel + "\n";
-                                std::cout << str;
-                                voicegroup[guild]->set_default_channel(channel);
+                                (*s_log)->log("Create voice endpoint for guild: " + guild, info);
+                                voicegroup[guild] = new voiceclient(guild);
+                                voicegroup[guild]->setDefaultChannel(channel);
                             }
                             else {
-                                std::cout << "Voice endpoint already exist\n";
-                                std::string str = "Set default channel of guild " + guild + " to " + channel + "\n";
-                                std::cout << str;
-                                voicegroup[guild]->set_default_channel(channel);
+                                (*s_log)->log("Voice endpoint already exist", info);
+                                voicegroup[guild]->setDefaultChannel(channel);
                             }
                             std::string querry = content.erase(0, 3);
                             if (querry == "") {
@@ -1339,11 +1414,11 @@ namespace discordbot {
                             else {
                                 //sendMsg(querry, channel);
                                 json result = utils::youtubePerformQuerry(querry);
-                                std::cout << "Querry result for keyword: " << querry << std::endl;
-                                //std::cout << result.dump() << std::endl;
-                                mainqueue[guild][userid] = new querryqueue;
+                                (*s_log)->log("Querry result for keyword: " + querry, info);
+                                //(*s_log)->log(, info); << result.dump() << std::endl;
+                                mainqueue[guild][userid] = new querryqueue(logger);
                                 mainqueue[guild][userid]->push(js_msg, result);
-                                std::cout << "Cached search querry\n";
+                                (*s_log)->log("Cached search querry", info);
                                 utils::youtubePrintSearchResult(result, querry, channel);
                             }
                             break;
@@ -1477,12 +1552,14 @@ namespace discordbot {
 
         void on_close(client* c, websocketpp::connection_hdl hdl) {
             c->get_alog().write(websocketpp::log::alevel::app, "Connection Closed");
-            std::cout << "Connection closed on hdl: " << hdl.lock().get() << std::endl;
+            std::ostringstream str;
+            str << "Connection closed on hdl: " << hdl.lock().get();
+            logger->log(str.str(), info);
             std::string uri = "wss://gateway.discord.gg/?v=8&encoding=json";
             websocketpp::lib::error_code ec;
             client::connection_ptr con_ptr = c->get_connection(uri, ec);
             if (ec) {
-                std::cout << "Could not create connection because: " << ec.message() << std::endl;
+                logger->log("Could not create connection because: " + ec.message(), error);
                 return;
             }
             // Note that connect here only requests a connection. No network messages are
@@ -1491,6 +1568,7 @@ namespace discordbot {
         }
 
         gatewayclient() {
+            this->logger = new discordbot::logger("gateway");
             client c;
             std::string uri = R"(wss://gateway.discord.gg/?v=8&encoding=json)";
             try {
@@ -1507,7 +1585,7 @@ namespace discordbot {
                 websocketpp::lib::error_code ec;
                 client::connection_ptr con_ptr = c.get_connection(uri, ec);
                 if (ec) {
-                    std::cout << "Could not create connection because: " << ec.message() << std::endl;
+                    logger->log("Could not create connection because: " + ec.message(), error);
                     return;
                 }
                 // Note that connect here only requests a connection. No network messages are
@@ -1521,7 +1599,7 @@ namespace discordbot {
                 //c.reset();
             }
             catch (websocketpp::exception const& e) {
-                std::cout << e.what() << std::endl;
+                logger->log(e.what(), info);
             }
         }
     };
@@ -1529,6 +1607,8 @@ namespace discordbot {
 
 int main() {
     SetConsoleOutputCP(CP_UTF8);
+    boost::log::register_simple_formatter_factory<severity_level, char>("Severity");
+    boost::log::add_common_attributes();
+    //boost::log::add_console_log(std::clog, boost::log::keywords::format = g_format);
     discordbot::gatewayclient gw; //blocking call
-    std::cout << "this is a test \n";
 }

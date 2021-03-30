@@ -1,3 +1,4 @@
+#pragma once
 #include "utils.hpp"
 namespace discordbot {
 	class embed {

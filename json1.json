@@ -1,28 +1,32 @@
-{
-  "op": 4,
+﻿{
+  "t": "MESSAGE_REACTION_ADD",
+  "s": 2,
+  "op": 0,
   "d": {
-    "video_codec": null,
-    "secret_key": [ 214, 173, 167, 248, 146, 103, 244, 56, 21, 222, 93, 140, 176, 226, 227, 168, 173, 162, 107, 253, 237, 197, 76, 98, 118, 59, 253, 250, 193, 194, 32, 252 ],
-    "mode": "xsalsa20_poly1305",
-    "media_session_id": "f43dbb6a4fed283461e0771815ea74e5",
-    "encodings": [
-      {
-        "type": "audio",
-        "ssrc": 1511053,
-        "rid": "",
-        "max_bitrate": 0,
-        "active": true
+    "user_id": "308556224910327808",
+    "message_id": "826282186901815296",
+    "member": {
+      "user": {
+        "username": "MysticCoss",
+        "id": "308556224910327808",
+        "discriminator": "7044",
+        "avatar": "3ea9bcf327d367fbadd6ace10b6f76b0"
       },
-      {
-        "type": "video",
-        "ssrc": 1511054,
-        "scale_resolution_down_by": 0,
-        "rtx_ssrc": 1511055,
-        "rid": "",
-        "max_bitrate": 0,
-        "active": false
-      }
-    ],
-    "audio_codec": "opus"
+      "roles": [ "816950728219951114" ],
+      "premium_since": null,
+      "pending": false,
+      "nick": "Duong Tien dau buoi an cut cho",
+      "mute": false,
+      "joined_at": "2021-01-30T15:11:59.144000+00:00",
+      "is_pending": false,
+      "hoisted_role": "816950728219951114",
+      "deaf": false
+    },
+    "emoji": {
+      "name": "1️⃣",
+      "id": null
+    },
+    "channel_id": "766182417865244693",
+    "guild_id": "633218964771569676"
   }
 }

@@ -21,6 +21,9 @@
     <ClCompile Include="udp.hpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="log.hpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="udp.h">

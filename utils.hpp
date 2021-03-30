@@ -393,11 +393,11 @@ namespace discordbot {
                 return NULL;
             }
         }
-        static void youtubePrintSearchResult(json result, std::string querry, std::string channel, bool debug = false) {
+        static json youtubePrintSearchResult(json result, std::string querry, std::string channel, bool debug = false) {
             if (result == NULL) {
                 std::cout << "youtubePrintSearchResult receive null object as paramenter\n";
                 utils::sendMsg(R"(```Got bad result, please try searching again!```)", channel);
-                return;
+                return NULL;
             }
             std::string printString = "Show result for keyword: ";
             printString += "\"";
@@ -411,11 +411,14 @@ namespace discordbot {
                 temp = std::regex_replace(temp, std::regex("&quot;"), R"(")");
                 temp = std::regex_replace(temp, std::regex(R"(&#39;)"), R"(')");
                 temp = std::regex_replace(temp, std::regex(R"(&amp;)"), R"(&)");
+                temp = std::regex_replace(temp, std::regex(R"(\|)"), R"(\|)");
+                temp = std::regex_replace(temp, std::regex(R"(\*)"), R"(\*)");
+                //temp = std::regex_replace(temp, std::regex(R"(_)"), R"(\_)");
                 printString += temp;
                 printString += "\n";
             }
             if (debug) std::cout << printString << std::endl;
-            sendMsg(printString, channel);
+            return sendMsg(printString, channel);
             //sendMsg("Note: Voice function is still in development", channel);
         }
 
