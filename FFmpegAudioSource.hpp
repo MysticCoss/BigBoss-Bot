@@ -1,14 +1,18 @@
+#pragma once
 #include <boost/process.hpp>
 #include <fstream>
-
+#include "log.hpp"
 class audio {
 private:
 	std::shared_ptr <boost::process::child> _process;
 	std::shared_ptr <boost::process::ipstream> _pipe;
+	discordbot::logger* logger;
 public:
-	audio(std::string id, const std::string& before_options = "", const std::string& options="") {
+	audio(discordbot::logger* logger, std::string id, const std::string& before_options = "", const std::string& options="") {
+		this->logger = logger;
 		//download audio
-		std::string command = "youtube-dl -f 251 " + id + " --id";
+		std::string command = "youtube-dl -f 251 --id -- " + id;
+		this->logger->log("Calling youtubedl with command: " + command, info);
 		boost::process::system(command);
 
 		//get raw audio stream using ffmpeg (s16le format)
@@ -16,13 +20,14 @@ public:
 		std::string input = path + "\\" + id + ".webm";
 		command = "ffmpeg " + before_options + " -i \"" + input + "\" " + options + " -loglevel quiet -f s16le -ac 2 -ar 48000 pipe:1";
 		std::this_thread::sleep_for(std::chrono::milliseconds(500));
-		std::cout << "Calling subprocess with command: " << command << std::endl;
+		this->logger->log("Calling subprocess with command: " + command, info);
 		_pipe = std::make_shared<boost::process::ipstream>(boost::process::ipstream());
 		_process = std::make_shared <boost::process::child>(boost::process::child(command, boost::process::std_out > *_pipe));
 	}
 
 	~audio() {
 		if (_process->running()) {
+			this->logger->log("Terminate ffmpeg", info);
 			_process->terminate();
 		}
 		_process->wait();

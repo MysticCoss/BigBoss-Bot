@@ -1,5 +1,6 @@
 ﻿#pragma once
 // BOOST_INTERPROCESS_USE_DLL
+#include "boost/regex.hpp"
 #include "websocketpp/config/asio_client.hpp"
 #include "websocketpp/client.hpp"
 #include <nlohmann/json.hpp>
@@ -44,6 +45,7 @@ struct querryqueue {
     std::string userid = "";
     std::string guildid = "";
     std::string channelid = "";
+    std::string messageid = "";
     std::string data[5];
     bool set = false;
     discordbot::logger* logger;
@@ -77,13 +79,37 @@ struct querryqueue {
         }
     }
     bool is_avaiable() {
-        return set;
+        if (messageid != "") {
+            return set;
+        }
+        else return false;
+    }
+    void setMessageId(std::string messageid) {
+        if (messageid == "") {
+            logger->log("Cache queue received empty messageid (line 88 websocket.cpp)", error);
+            return;
+        }
+        else {
+            this->messageid = messageid;
+            logger->log("Cached message id: " + messageid, info);
+        }
+    }
+    std::string gettMessageId() {
+        if (messageid == "") {
+            logger->log("Cache queue return empty messageid (line 96 websocket.cpp)", error);
+        }
+        return messageid;
     }
     void reset() {
         for (int i = 0; i < 5; i++) {
             data[i] = "";
         }
+        std::string userid = "";
+        std::string guildid = "";
+        std::string channelid = "";
+        std::string messageid = "";
         set = false;
+        logger->log("Cleared cache data", info);
     }
 };
 
@@ -123,6 +149,8 @@ struct userinfo {
 namespace discordbot {
     class voiceclient {
     private:
+        bool loop = false;
+        std::string nowplaying = "";
         logger* logger;
         std::string current_voice_channel = "";
         std::string default_channel = "";
@@ -201,6 +229,11 @@ namespace discordbot {
             return;
         }
 
+        std::string getDefaultChannel() {
+            logger->log("Get default channel: " + default_channel, info);
+            return default_channel;
+        }
+
         bool isConnect() {
             return connect;
         }
@@ -209,16 +242,28 @@ namespace discordbot {
             return running;
         }
 
+        bool _loop() {
+            if (loop) {
+                loop = false;
+                logger->log("Loop changed to false", info);
+                return false;
+            }
+            else {
+                loop = true;
+                logger->log("Loop changed to true", info);
+                return true;
+            }
+        }
         void selectProtocol(websocketpp::connection_hdl hdl, client* c, std::string address, int port) {
             std::string payload = R"({ "op": 1,"d": {"protocol": "udp","data": {"address": ")";
             payload += address += R"(","port": )";
             payload += std::to_string(port);
             payload += R"(, "mode": "xsalsa20_poly1305"}}})";
-            logger->log({ "Select protocol sent with payload: " + payload }, info);
+            logger->log("Select protocol sent with payload: " + payload, info);
             websocketpp::lib::error_code ec;
             c->send(hdl, payload, websocketpp::frame::opcode::text, ec);
             if (ec) {
-                logger->log({ "Select protocol failed because: " + ec.message() }, info);
+                logger->log("Select protocol failed because: " + ec.message(), info);
             }
             return;
         }
@@ -480,6 +525,7 @@ namespace discordbot {
             _token = "";
             session = "";
             user_id = "";
+            loop = false;
             key.clear();
 
             cts.cancel();
@@ -606,9 +652,16 @@ namespace discordbot {
             }
         }*/
         
-        void start(client* gatewayclient, websocketpp::connection_hdl gatewayhdl, std::string uri, std::string guildid, std::string _token, std::string session, std::string user_id) {
+        void updateHandler(client* gatewayclient, websocketpp::connection_hdl gatewayhdl) {
+            this->gatewayclient = gatewayclient;
+            this->gatewayhdl = gatewayhdl;
+        }
+
+        void start(client* gatewayclient, websocketpp::connection_hdl gatewayhdl, std::string uri, std::string guildid, std::string _token, std::string session, std::string user_id, std::queue<std::string>* disconnect_queue) {
             auto shared_running = std::make_shared<bool*>(&running);
             auto shared_pusher_lock = std::make_shared<bool*>(&is_pusher_locked);
+            auto shared_loop = std::make_shared<bool*>(&loop);
+            auto shared_nowplaying = std::make_shared<std::string*>(&nowplaying);
             this->endpoint = uri;
             this->guildid = guildid;
             this->_token = _token;
@@ -638,33 +691,50 @@ namespace discordbot {
                     c.run();
                     (*s_log)->log({"Endpoint created"}, info);
                     });
-                pusher = concurrency::create_task([this, shared_running, shared_pusher_lock, s_log] {
+                pusher = concurrency::create_task([this, shared_running, shared_pusher_lock, s_log, shared_loop, shared_nowplaying, disconnect_queue] {
+                    int counter = 0;
                     while (1) {
                         int i = 0;
                         if (selfqueue.size() > 0 && state && !(**shared_running) && !(**shared_pusher_lock)) {
+                            counter = 0;
                             i = 1;
                             (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
                             this->playing = play(selfqueue.front());
                             selfqueue.pop();
-                            (*s_log)->log({ "[Pusher] Sleep 10000ms" }, info);
+                            (*s_log)->log("[Pusher] Sleep 10000ms", info);
                             utils::sleep(10000);
-                            (*s_log)->log({ "[Pusher] Player playing, wait for player" }, info);
+                            (*s_log)->log("[Pusher] Player playing, wait for player", info);
                             while (**shared_running) {
                                 utils::sleep(1000);
                             }
-                            (*s_log)->log({ "[Pusher] No longer wait for player" }, info);
+                            (*s_log)->log("[Pusher] No longer wait for player", info);
                             utils::sleep(1000);
+                            if (**shared_loop && **shared_nowplaying != "") {
+                                (*s_log)->log("[Pusher] Loop on, push last played to queue", info);
+                                selfqueue.push(**shared_nowplaying);
+                            }
                         }
                         else {
                             if (i == 1) {
                                 i = 0;
-                                (*s_log)->log({ "[Pusher] Pusher sleep" }, info);
+                                (*s_log)->log("[Pusher] Pusher sleep", info);
                                 if (selfqueue.size() <= 0) (*s_log)->log({ "[Pusher] Queue Size <= 0" }, info);
-                                if (state == false) (*s_log)->log({ "[Pusher] State = false" }, info);
-                                if (**shared_running) (*s_log)->log({ "Player is running" }, info);
-                                if (**shared_pusher_lock) (*s_log)->log({ "Pusher locked" }, info);
+                                if (state == false) (*s_log)->log("[Pusher] State = false", info);
+                                if (**shared_running) (*s_log)->log("Player is running", info);
+                                if (**shared_pusher_lock) (*s_log)->log("Pusher locked", info);
                                 utils::sleep(1000);
                             }
+                            if (state) {
+                                counter++;
+                            }
+                            else {
+                                counter = 0;
+                            }
+                            //std::cout << counter << std::endl;
+                        }
+                        if (counter >= 1800) {
+                            disconnect_queue->push(this->guildid);
+                            counter = 0;
                         }
                         utils::sleep(1000);
                     }
@@ -674,23 +744,25 @@ namespace discordbot {
 
         concurrency::task<void> play(std::string id) {
             running = true;
+            auto shared_nowplaying = std::make_shared<std::string*>(&nowplaying);
             auto shared_token = std::make_shared<concurrency::cancellation_token*>(&p_token);
             auto shared_running = std::make_shared<bool*>(&running);
             auto s_log = std::make_shared<discordbot::logger*>(logger);
-            return concurrency::create_task([this, id, shared_token, shared_running, s_log] {
+            return concurrency::create_task([this, id, shared_token, shared_running, s_log, shared_nowplaying] {
                 speak();
                 std::string title = utils::youtubeGetTitle(id);
+                **shared_nowplaying = id;
                 std::string payload = "Now playing:\n";
                 payload = payload + "\"" + title + "\"";
                 utils::sendMsg(payload, default_channel);
                 (*s_log)->log("Create audio source", info);
-                audio* source = new audio(id);
+                audio* source = new audio(*s_log, id);
                 const unsigned short FRAME_MILLIS = 20;
                 const unsigned short FRAME_SIZE = 960;
                 const unsigned short SAMPLE_RATE = 48000;
                 const unsigned short CHANNELS = 2;
-                const unsigned int BITRATE = 80000;
-                #define MAX_PACKET_SIZE FRAME_SIZE * 5
+                const unsigned int BITRATE = 100000;
+                #define MAX_PACKET_SIZE FRAME_SIZE * 7
                 int error;
                 (*s_log)->log("Creating opus encoder", info);
                 (*s_log)->log("FRAME_MILLIS: " + std::to_string(FRAME_MILLIS), info);
@@ -920,6 +992,7 @@ namespace discordbot {
     };
     class gatewayclient {
     private:
+        std::queue<std::string> disconnect_queue;
         logger* logger;
     public:
         std::unordered_map<std::string, std::unordered_map<std::string, querryqueue*>> mainqueue; //[guild_id][user_id] -> querrydata
@@ -1094,6 +1167,19 @@ namespace discordbot {
                 case 11: //Heartbeat ACK
                     (*s_log)->log("Discord opcode: 11", info);
                     (*s_log)->log("Heartbeat ACK", info);
+                    while (!disconnect_queue.empty()) {
+                        websocketpp::lib::error_code ec;
+                        c->send(hdl, utils::getVoiceStateUpdatePayload(disconnect_queue.front(), "null"), websocketpp::frame::opcode::text, ec);
+                        if (ec) {
+                            (*s_log)->log("Can not send msg because: " + ec.message(), error);
+                        }
+                        else {
+                            (*s_log)->log("Inactive for too long, disconnect", info);
+                            utils::sendMsg("I left the voice channel because i have been inactive for too long", voicegroup[disconnect_queue.front()]->getDefaultChannel());
+                            disconnect_queue.pop();
+                        }
+                        utils::sleep(2000);
+                    }
                     break;
                 case 7: //Request reconnect
                     **s_is_restart = true;
@@ -1199,14 +1285,14 @@ namespace discordbot {
                                 (*s_log)->log("Start voice connection with endpoint: " + endpoint + ", guild ID: " + guildid + ", session ID: " + usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, info);
                                 voicegroup[guildid] = new voiceclient(guildid);
                                 voicegroup[guildid]->setCurrentVoiceChannel(usergroup[guildid][selfid]->get_voice_channel_id());
-                                voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][selfid]->sessionid, selfid);
+                                voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][selfid]->sessionid, selfid, &disconnect_queue);
                             }
                             else { //exist
                                 //stop old connection and start a new connection
                                 (*s_log)->log("Exist voice connection with endpoint: " + endpoint + ", guild ID: " + guildid + ", session ID: " + usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, info);
                                 //voicegroup[guildid]->cleanup();
                                 voicegroup[guildid]->setCurrentVoiceChannel(usergroup[guildid][selfid]->get_voice_channel_id());
-                                voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, selfid);
+                                voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, selfid, &disconnect_queue);
                             }
                         }
                         break;
@@ -1284,10 +1370,8 @@ namespace discordbot {
                                     if (usergroup[guild][userid]->get_voice_channel_id() != "") {
                                         websocketpp::lib::error_code ec;
                                         if (voicegroup.find(guild) == voicegroup.end()) { //not exist
-                                            //(*s_log)->log(, info); << "Start voice connection with endpoint: " << endpoint << ", guild ID: " << guildid << ", session ID: " << usergroup[guildid][ready["d"]["user"]["id"]]->sessionid << std::endl;
                                             voicegroup[guild] = new voiceclient(guild);
                                             voicegroup[guild]->setDefaultChannel(channel);
-                                            //voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][selfid]->sessionid, selfid);
                                         }
                                         else { //exist
                                             //stop old connection and start a new connection
@@ -1295,7 +1379,7 @@ namespace discordbot {
                                             voicegroup[guild]->setDefaultChannel(channel);
                                             //voicegroup[guildid]->start(c, hdl, endpoint, guildid, _token, usergroup[guildid][ready["d"]["user"]["id"]]->sessionid, ready["d"]["user"]["id"]);
                                         }
-                                        c->send(hdl, getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
+                                        c->send(hdl, utils::getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
                                         if (ec) {
                                             (*s_log)->log("Can not send voice state update payload because: " + ec.message(), error);
                                             break;
@@ -1304,16 +1388,19 @@ namespace discordbot {
                                     else {
                                         std::string payload = "You are not in voice channel!";
                                         utils::sendMsg(payload, channel);
+                                        break;
                                     }
                                 }
                                 else {
                                     std::string payload = "```Internal error, please rejoin voice channel```";
                                     utils::sendMsg(payload, channel);
+                                    break;
                                 }
                             }
                             else {
                                 std::string payload = "```Internal error, please rejoin voice channel```";
                                 utils::sendMsg(payload, channel);
+                                break;
                             }
                             break;
                         }
@@ -1327,13 +1414,27 @@ namespace discordbot {
                                 voicegroup[guild]->clear();
                                 utils::sendMsg("Got it", channel);
                                 websocketpp::lib::error_code ec;
-                                std::string payload = getVoiceStateUpdatePayload(guild, "null");
+                                std::string payload = utils::getVoiceStateUpdatePayload(guild, "null");
                                 c->send(hdl, payload, websocketpp::frame::opcode::text);
                                 if (ec) {
                                     (*s_log)->log("Cannot send voice update payload because: " + ec.message(), error);
                                 }
                             }
                             break;
+                        }
+
+                        if (content == "?loop") {
+                            if (voicegroup.find(guild) != voicegroup.end()) {
+                                if (voicegroup[guild]->_loop()) {
+                                    utils::sendMsg("Loop `on`", channel);
+                                }
+                                else {
+                                    utils::sendMsg("Loop `off`", channel);
+                                }
+                            }
+                            else {
+                                utils::sendMsg("You must play music at lease one time to be able to config", channel);
+                            }
                         }
 
                         if (content == "1" || content == "2" || content == "3" || content == "4" || content == "5") {
@@ -1360,14 +1461,20 @@ namespace discordbot {
                                                             (*s_log)->log("User request music is in different voice channel with target voice endpoint, expected change", info);
                                                             voicegroup[guild]->lockPusher();
                                                             voicegroup[guild]->selfqueue.push(temp->data[selected - 1]);
+                                                            if (utils::deleteMsg(*s_log, temp->gettMessageId(), channel)) {
+                                                                (*s_log)->log("Deleted print result message", info);
+                                                            }
                                                             (*s_log)->log("User " + userid + " selected video " + temp->data[selected - 1], info);
                                                         }
                                                         else {
+                                                            if (utils::deleteMsg(*s_log, temp->gettMessageId(), channel)) {
+                                                                (*s_log)->log("Deleted print result message", info);
+                                                            }
                                                             voicegroup[guild]->selfqueue.push(temp->data[selected - 1]);
                                                             (*s_log)->log("User " + userid + " selected video " + temp->data[selected - 1], info);
                                                         }
                                                         websocketpp::lib::error_code ec;
-                                                        c->send(hdl, getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
+                                                        c->send(hdl, utils::getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
                                                         if (ec) {
                                                             (*s_log)->log("Can not send voice state update payload because: " + ec.message(), error);
                                                         }
@@ -1407,19 +1514,118 @@ namespace discordbot {
                                 (*s_log)->log("Voice endpoint already exist", info);
                                 voicegroup[guild]->setDefaultChannel(channel);
                             }
-                            std::string querry = content.erase(0, 3);
-                            if (querry == "") {
-                                utils::sendMsg("Please provide paramenter", channel);
+                            if (content[2] != ' ') {
+                                utils::sendMsg("```Invalid paramenter, usage: ?p <string>```", channel);
+                                return;
                             }
-                            else {
+                            std::string querry = content.erase(0, 3);
+                            boost::smatch result;
+                            if (boost::regex_search(querry, result, boost::regex(R"(https:\/\/www\.youtube.com\/watch\?v=(.{11}))"),boost::match_default)) {
+                                std::string id = result[1].str();
+                                if (usergroup.find(guild) != usergroup.end()) {
+                                    if (usergroup[guild].find(userid) != usergroup[guild].end()) {
+                                        if (usergroup[guild][userid]->get_voice_channel_id() != "") {
+                                            if (usergroup[guild][userid]->get_voice_channel_id() != voicegroup[guild]->getCurrentVoiceChannel()) {
+                                                (*s_log)->log("User request music is in different voice channel with target voice endpoint, expected change", info);
+                                                voicegroup[guild]->lockPusher();
+                                                voicegroup[guild]->selfqueue.push(id);
+                                                (*s_log)->log("User " + userid + " selected video " + id, info);
+                                            }
+                                            else {
+                                                voicegroup[guild]->selfqueue.push(id);
+                                                (*s_log)->log("User " + userid + " selected video " + id, info);
+                                            }
+                                            websocketpp::lib::error_code ec;
+                                            c->send(hdl, utils::getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
+                                            if (ec) {
+                                                (*s_log)->log("Can not send voice state update payload because: " + ec.message(), error);
+                                            }
+                                        }
+                                        else {
+                                            std::string payload = "You are not in any voice channel!";
+                                            utils::sendMsg(payload, channel);
+                                        }
+                                    }
+                                    else {
+                                        std::string payload = "```Internal error, please rejoin voice channel```";
+                                        utils::sendMsg(payload, channel);
+                                    }
+                                }
+                                else {
+                                    std::string payload = "```Internal error, please rejoin voice channel```";
+                                    utils::sendMsg(payload, channel);
+                                }
+                                break;
+                            }
+
+
+                            //https://youtu.be/XFc_pWUp41k
+                            if (boost::regex_search(querry, result, boost::regex(R"(https:\/\/youtu\.be\/(.{11}))"), boost::match_default)) {
+                                std::string id = result[1].str();
+                                if (usergroup.find(guild) != usergroup.end()) {
+                                    if (usergroup[guild].find(userid) != usergroup[guild].end()) {
+                                        if (usergroup[guild][userid]->get_voice_channel_id() != "") {
+                                            if (usergroup[guild][userid]->get_voice_channel_id() != voicegroup[guild]->getCurrentVoiceChannel()) {
+                                                (*s_log)->log("User request music is in different voice channel with target voice endpoint, expected change", info);
+                                                voicegroup[guild]->lockPusher();
+                                                voicegroup[guild]->selfqueue.push(id);
+                                                (*s_log)->log("User " + userid + " selected video " + id, info);
+                                            }
+                                            else {
+                                                voicegroup[guild]->selfqueue.push(id);
+                                                (*s_log)->log("User " + userid + " selected video " + id, info);
+                                            }
+                                            websocketpp::lib::error_code ec;
+                                            c->send(hdl, utils::getVoiceStateUpdatePayload(guild, usergroup[guild][userid]->get_voice_channel_id()), websocketpp::frame::opcode::text, ec);
+                                            if (ec) {
+                                                (*s_log)->log("Can not send voice state update payload because: " + ec.message(), error);
+                                            }
+                                        }
+                                        else {
+                                            std::string payload = "You are not in any voice channel!";
+                                            utils::sendMsg(payload, channel);
+                                        }
+                                    }
+                                    else {
+                                        std::string payload = "```Internal error, please rejoin voice channel```";
+                                        utils::sendMsg(payload, channel);
+                                    }
+                                }
+                                else {
+                                    std::string payload = "```Internal error, please rejoin voice channel```";
+                                    utils::sendMsg(payload, channel);
+                                }
+                                break;
+                            }
+
+                            if (querry == "") {
+                                utils::sendMsg("```Please provide paramenter, usage: ?p <string>```", channel);
+                            }
+                            else {                                
                                 //sendMsg(querry, channel);
                                 json result = utils::youtubePerformQuerry(querry);
                                 (*s_log)->log("Querry result for keyword: " + querry, info);
                                 //(*s_log)->log(, info); << result.dump() << std::endl;
+                                if (mainqueue.find(guild) != mainqueue.end()) {
+                                    if (mainqueue[guild].find(userid) != mainqueue[guild].end()) {
+                                        if (mainqueue[guild][userid]->gettMessageId() != "") {
+                                            utils::deleteMsg(*s_log, mainqueue[guild][userid]->gettMessageId(), channel);
+                                        }
+                                    }
+                                }
                                 mainqueue[guild][userid] = new querryqueue(logger);
                                 mainqueue[guild][userid]->push(js_msg, result);
-                                (*s_log)->log("Cached search querry", info);
-                                utils::youtubePrintSearchResult(result, querry, channel);
+                                //(*s_log)->log("Cached search querry", info);
+                                json response = utils::youtubePrintSearchResult(result, querry, channel);
+                                if (response["id"].is_string()) {
+                                    std::string id = response["id"];
+                                    mainqueue[guild][userid]->setMessageId(response["id"]);
+                                    //utils::addEmoji();
+                                }
+                                else {
+                                    (*s_log)->log("Can not get message id (youtubePrintSearchResult)", error);
+                                }                                
+                               //std::cout << response.dump(4);
                             }
                             break;
                         }
@@ -1462,7 +1668,7 @@ namespace discordbot {
                         value = "";
                         if (utils::parse(&value, "offset", content)) {
                             if (voicegroup.find(guild) == voicegroup.end()) {
-                                utils::sendMsg("You must play music at lease 1 time to be able to config.", channel);
+                                utils::sendMsg("You must play music at lease 1 time to be able to config", channel);
                                 break;
                             }
                             std::string num = "";
@@ -1523,33 +1729,6 @@ namespace discordbot {
                 });
         }
 
-        std::string getVoiceStateUpdatePayload(std::string guild, std::string channel) {
-            /*
-            {
-                "op": 4,
-                "d": {
-                "guild_id": "41771983423143937",
-                "channel_id": "127121515262115840",
-                "self_mute": false,
-                "self_deaf": false
-                }
-            }
-            */
-            std::string payload = R"({"op": 4,"d": {"guild_id": ")";
-            payload += guild;
-            if (channel == "null") {
-                payload += R"(","channel_id": )";
-                payload += channel;
-                payload += R"(,"self_mute": false,"self_deaf": true}})";
-            }
-            else {
-                payload += R"(","channel_id": ")";
-                payload += channel;
-                payload += R"(","self_mute": false,"self_deaf": true}})";
-            }
-            return payload;
-        }
-
         void on_close(client* c, websocketpp::connection_hdl hdl) {
             c->get_alog().write(websocketpp::log::alevel::app, "Connection Closed");
             std::ostringstream str;
@@ -1562,8 +1741,6 @@ namespace discordbot {
                 logger->log("Could not create connection because: " + ec.message(), error);
                 return;
             }
-            // Note that connect here only requests a connection. No network messages are
-            // exchanged until the event loop starts running in the next line.
             c->connect(con_ptr);
         }
 
@@ -1609,6 +1786,5 @@ int main() {
     SetConsoleOutputCP(CP_UTF8);
     boost::log::register_simple_formatter_factory<severity_level, char>("Severity");
     boost::log::add_common_attributes();
-    //boost::log::add_console_log(std::clog, boost::log::keywords::format = g_format);
     discordbot::gatewayclient gw; //blocking call
 }

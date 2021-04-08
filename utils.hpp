@@ -18,6 +18,8 @@
 #include <boost/chrono.hpp>
 #include <windows.h>
 #include <math.h>
+#include "log.hpp"
+#include <boost/regex.hpp>
 typedef websocketpp::client<websocketpp::config::asio_tls_client> client;
 typedef std::shared_ptr<boost::asio::ssl::context> context_ptr;
 using websocketpp::lib::placeholders::_1;
@@ -179,7 +181,7 @@ namespace discordbot {
             return 0;
         }
 
-        static void timerSleep(double seconds) {
+        inline static void timerSleep(double seconds) {
             using namespace std::chrono;
 
             static HANDLE timer = CreateWaitableTimer(NULL, FALSE, NULL);
@@ -281,6 +283,21 @@ namespace discordbot {
             }
         }
 
+        static int regexParse(logger* logger, std::string regex, std::string input, boost::smatch* _return) {
+            boost::smatch res;
+            if (boost::regex_match(input, res, boost::regex(regex), boost::match_extra))
+            {
+                logger->log("Match found: string \"" + input + "\" with pattern \"" + regex + "\"", info);
+                *_return = res;
+                return 1;
+            }
+            else
+            {
+                logger->log("No match found: string \"" + input + "\" with pattern \"" + regex + "\"", error);
+                return 0;
+            }
+        }
+
         static std::string youtubeGetTitle(std::string video_id, bool debug = false) {
             CURL* curl = curl_easy_init();
             if (curl) {
@@ -329,6 +346,10 @@ namespace discordbot {
                 std::cout << "[sendMsg] Invalid handle\n";
                 return NULL;
             }
+        }
+
+        static int addReaction(logger* logger, std::string emoji, std::string message) {
+
         }
 
         static void restart(websocketpp::connection_hdl hdl, client* c, concurrency::cancellation_token_source* cts, concurrency::cancellation_token* token, concurrency::task<void>* t) {
@@ -389,10 +410,78 @@ namespace discordbot {
                 return jsonpayload;
             }
             else {
-                std::cout << "[sendMsg] Invalid handle\n";
+                std::cout << "sendMsg invalid handle\n";
                 return NULL;
             }
         }
+
+        static int deleteMsg(discordbot::logger* logger, std::string messageID, std::string channelID, bool debug = false) {
+            //Request DELETE /channels/{channel.id}/messages/{message.id}
+            CURL* curl = curl_easy_init();
+            if (curl) {
+                struct curl_slist* list = NULL;
+                json postData;
+                std::string url = "https://discord.com/api/v8/channels/" + channelID + "/messages/" + messageID;
+                //url = "https://discord.com/api/v8/channels/" + channelID + "/messages";
+                curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1);
+                curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 1);
+                /* Provide CA Certs from http://curl.haxx.se/docs/caextract.html */
+                curl_easy_setopt(curl, CURLOPT_CAINFO, "curl-ca-bundle.crt");
+                curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+
+                list = curl_slist_append(list, "Authorization: Bot ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss");
+                list = curl_slist_append(list, "Content-Type: application/json");
+                char buf[CURL_ERROR_SIZE];
+                curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, buf);
+                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
+                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
+                struct payload chunk;
+                curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void*)&chunk);
+                CURLcode res = curl_easy_perform(curl);
+                if (res != CURLE_OK) {
+                    std::string errmsg(buf);
+                    logger->log("deleteMsg failed with error code " + std::to_string(res) + ": " + errmsg, error);
+                    return 0;
+                }
+                curl_slist_free_all(list); /* free the list again */
+                curl_easy_reset(curl);
+                curl_easy_cleanup(curl);
+                return 1;
+            }
+            else {
+                logger->log("deleteMsg invalid handle", error);
+                return 0;
+            }
+        }
+
+        static std::string getVoiceStateUpdatePayload(std::string guild, std::string channel) {
+            /*
+            {
+                "op": 4,
+                "d": {
+                "guild_id": "41771983423143937",
+                "channel_id": "127121515262115840",
+                "self_mute": false,
+                "self_deaf": false
+                }
+            }
+            */
+            std::string payload = R"({"op": 4,"d": {"guild_id": ")";
+            payload += guild;
+            if (channel == "null") {
+                payload += R"(","channel_id": )";
+                payload += channel;
+                payload += R"(,"self_mute": false,"self_deaf": true}})";
+            }
+            else {
+                payload += R"(","channel_id": ")";
+                payload += channel;
+                payload += R"(","self_mute": false,"self_deaf": true}})";
+            }
+            return payload;
+        }
+
         static json youtubePrintSearchResult(json result, std::string querry, std::string channel, bool debug = false) {
             if (result == NULL) {
                 std::cout << "youtubePrintSearchResult receive null object as paramenter\n";
@@ -417,6 +506,7 @@ namespace discordbot {
                 printString += temp;
                 printString += "\n";
             }
+            printString += "Choose 1-5 by type `1` or `2`,... to the chat";
             if (debug) std::cout << printString << std::endl;
             return sendMsg(printString, channel);
             //sendMsg("Note: Voice function is still in development", channel);
