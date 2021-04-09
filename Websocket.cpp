@@ -39,7 +39,7 @@ using websocketpp::lib::bind;
 typedef nlohmann::json json;
 typedef websocketpp::config::asio_client::message_type::ptr message_ptr;
 boost::log::sources::severity_logger_mt<severity_level> lg;
-
+extern std::string str_token = "";
 
 struct querryqueue {
     std::string userid = "";
@@ -306,13 +306,13 @@ namespace discordbot {
             websocketpp::lib::error_code ec;
             json resume;
             resume["op"] = 6;
-            resume["d"]["token"] = "ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss";
+            resume["d"]["token"] = str_token;
             resume["d"]["session_id"] = (a->ready)["d"]["session_id"];
             resume["d"]["seq"] = a->seq_num;
             /*std::string a = R"({
                         "op": 6,
                         "d": {
-                            "token": "ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss",
+                            "token": "SOMETHINGHERE",
                             "session_id": "session_id_i_stored",
                             "seq": 1337
                         }
@@ -683,10 +683,12 @@ namespace discordbot {
             c.set_close_handler(bind(&voiceclient::on_close, this, &c, ::_1));
             c.reset();
             c.connect(con_ptr);
+
+            auto s_log = std::make_shared<discordbot::logger*>(logger);
             if (first_time) {
-                logger->log("First time launch voiceclient, start endpoint and pusher", notification);
+                (*s_log)->log("First time launch voiceclient, start endpoint and pusher", notification);
                 first_time = false;
-                auto s_log = std::make_shared<discordbot::logger*>(logger);
+                
                 concurrency::create_task([this, s_log] {
                     c.run();
                     (*s_log)->log({"Endpoint created"}, info);
@@ -701,14 +703,14 @@ namespace discordbot {
                             (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
                             this->playing = play(selfqueue.front());
                             selfqueue.pop();
-                            (*s_log)->log("[Pusher] Sleep 10000ms", info);
-                            utils::sleep(10000);
+                            (*s_log)->log("[Pusher] Sleep 50ms", info);
+                            utils::sleep(50);
                             (*s_log)->log("[Pusher] Player playing, wait for player", info);
                             while (**shared_running) {
-                                utils::sleep(1000);
+                                utils::sleep(50);
                             }
                             (*s_log)->log("[Pusher] No longer wait for player", info);
-                            utils::sleep(1000);
+                            utils::sleep(50);
                             if (**shared_loop && **shared_nowplaying != "") {
                                 (*s_log)->log("[Pusher] Loop on, push last played to queue", info);
                                 selfqueue.push(**shared_nowplaying);
@@ -722,7 +724,7 @@ namespace discordbot {
                                 if (state == false) (*s_log)->log("[Pusher] State = false", info);
                                 if (**shared_running) (*s_log)->log("Player is running", info);
                                 if (**shared_pusher_lock) (*s_log)->log("Pusher locked", info);
-                                utils::sleep(1000);
+                                utils::sleep(50);
                             }
                             if (state) {
                                 counter++;
@@ -736,10 +738,64 @@ namespace discordbot {
                             disconnect_queue->push(this->guildid);
                             counter = 0;
                         }
-                        utils::sleep(1000);
+                        utils::sleep(50);
                     }
                 });
             } 
+            else {
+                if (pusher.is_done()) { //somehow the thread is terminated, unknown reason
+                    (*s_log)->log("Somehow pusher is terminated, start it again", info);
+                    //auto s_log = std::make_shared<discordbot::logger*>(logger);
+                    pusher = concurrency::create_task([this, shared_running, shared_pusher_lock, s_log, shared_loop, shared_nowplaying, disconnect_queue] {
+                        int counter = 0;
+                        while (1) {
+                            int i = 0;
+                            if (selfqueue.size() > 0 && state && !(**shared_running) && !(**shared_pusher_lock)) {
+                                counter = 0;
+                                i = 1;
+                                (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
+                                this->playing = play(selfqueue.front());
+                                selfqueue.pop();
+                                (*s_log)->log("[Pusher] Sleep 50ms", info);
+                                utils::sleep(50);
+                                (*s_log)->log("[Pusher] Player playing, wait for player", info);
+                                while (**shared_running) {
+                                    utils::sleep(50);
+                                }
+                                (*s_log)->log("[Pusher] No longer wait for player", info);
+                                utils::sleep(50);
+                                if (**shared_loop && **shared_nowplaying != "") {
+                                    (*s_log)->log("[Pusher] Loop on, push last played to queue", info);
+                                    selfqueue.push(**shared_nowplaying);
+                                }
+                            }
+                            else {
+                                if (i == 1) {
+                                    i = 0;
+                                    (*s_log)->log("[Pusher] Pusher sleep", info);
+                                    if (selfqueue.size() <= 0) (*s_log)->log({ "[Pusher] Queue Size <= 0" }, info);
+                                    if (state == false) (*s_log)->log("[Pusher] State = false", info);
+                                    if (**shared_running) (*s_log)->log("Player is running", info);
+                                    if (**shared_pusher_lock) (*s_log)->log("Pusher locked", info);
+                                    utils::sleep(50);
+                                }
+                                if (state) {
+                                    counter++;
+                                }
+                                else {
+                                    counter = 0;
+                                }
+                                //std::cout << counter << std::endl;
+                            }
+                            if (counter >= 35555) {
+                                disconnect_queue->push(this->guildid);
+                                counter = 0;
+                            }
+                            utils::sleep(50);
+                        }
+                        });
+                }
+            }
         }
 
         concurrency::task<void> play(std::string id) {
@@ -752,8 +808,8 @@ namespace discordbot {
                 speak();
                 std::string title = utils::youtubeGetTitle(id);
                 **shared_nowplaying = id;
-                std::string payload = "Now playing:\n";
-                payload = payload + "\"" + title + "\"";
+                std::string payload = ":white_flower: Now playing:\n";
+                payload = payload + "\"" + title + "\":notes: ";
                 utils::sendMsg(payload, default_channel);
                 (*s_log)->log("Create audio source", info);
                 audio* source = new audio(*s_log, id);
@@ -1024,7 +1080,9 @@ namespace discordbot {
 
         void auth(websocketpp::connection_hdl hdl, client* c) {
             websocketpp::lib::error_code ec;
-            std::string auth_str = "{\"op\":2,\"d\":{\"token\":\"ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss\",\"intents\":1664,\"properties\":{\"$os\":\"window\",\"$browser\":\"\",\"$device\":\"\"}}}";
+            std::string auth_str = "{\"op\":2,\"d\":{\"token\":\"";
+            auth_str += str_token;
+            auth_str += "\",\"intents\":1664,\"properties\":{\"$os\":\"window\",\"$browser\":\"\",\"$device\":\"\"}}}";
             c->send(hdl, auth_str, websocketpp::frame::opcode::text, ec);
             logger->log({ "Authorize packet sent" }, info);
             if (ec) {
@@ -1783,6 +1841,8 @@ namespace discordbot {
 };
 
 int main() {
+    std::ifstream info("info.txt");
+    info >> str_token;
     SetConsoleOutputCP(CP_UTF8);
     boost::log::register_simple_formatter_factory<severity_level, char>("Severity");
     boost::log::add_common_attributes();

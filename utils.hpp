@@ -27,6 +27,7 @@ using websocketpp::lib::placeholders::_2;
 using websocketpp::lib::bind;
 typedef nlohmann::json json;
 typedef websocketpp::config::asio_client::message_type::ptr message_ptr; 
+extern std::string str_token;
 namespace discordbot {
     class utils {
     public:
@@ -384,8 +385,7 @@ namespace discordbot {
                 /* Provide CA Certs from http://curl.haxx.se/docs/caextract.html */
                 curl_easy_setopt(curl, CURLOPT_CAINFO, "curl-ca-bundle.crt");
                 curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-
-                list = curl_slist_append(list, "Authorization: Bot ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss");
+                list = curl_slist_append(list, ("Authorization: Bot " + str_token).c_str());
                 list = curl_slist_append(list, "Content-Type: application/json");
 
                 curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
@@ -430,7 +430,7 @@ namespace discordbot {
                 curl_easy_setopt(curl, CURLOPT_CAINFO, "curl-ca-bundle.crt");
                 curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
 
-                list = curl_slist_append(list, "Authorization: Bot ODA4NjQ1MzMxNzQ3MDc4MTc0.YCJjpg.pNK7l9i3SoDvX8PtLipK_1ZlIss");
+                list = curl_slist_append(list, ("Authorization: Bot "+str_token).c_str());
                 list = curl_slist_append(list, "Content-Type: application/json");
                 char buf[CURL_ERROR_SIZE];
                 curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, buf);
