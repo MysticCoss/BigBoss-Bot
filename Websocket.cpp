@@ -703,11 +703,12 @@ namespace discordbot {
                             (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
                             this->playing = play(selfqueue.front());
                             selfqueue.pop();
-                            (*s_log)->log("[Pusher] Sleep 50ms", info);
-                            utils::sleep(50);
+                            (*s_log)->log("[Pusher] Sleep 100ms", info);
+                            utils::sleep(100);
                             (*s_log)->log("[Pusher] Player playing, wait for player", info);
                             while (**shared_running) {
                                 utils::sleep(50);
+                                counter = 0;
                             }
                             (*s_log)->log("[Pusher] No longer wait for player", info);
                             utils::sleep(50);
@@ -734,7 +735,7 @@ namespace discordbot {
                             }
                             //std::cout << counter << std::endl;
                         }
-                        if (counter >= 1800) {
+                        if (counter >= 35555) {
                             disconnect_queue->push(this->guildid);
                             counter = 0;
                         }
@@ -756,11 +757,12 @@ namespace discordbot {
                                 (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
                                 this->playing = play(selfqueue.front());
                                 selfqueue.pop();
-                                (*s_log)->log("[Pusher] Sleep 50ms", info);
-                                utils::sleep(50);
+                                (*s_log)->log("[Pusher] Sleep 100ms", info);
+                                utils::sleep(100);
                                 (*s_log)->log("[Pusher] Player playing, wait for player", info);
                                 while (**shared_running) {
                                     utils::sleep(50);
+                                    counter = 0;
                                 }
                                 (*s_log)->log("[Pusher] No longer wait for player", info);
                                 utils::sleep(50);
@@ -779,7 +781,7 @@ namespace discordbot {
                                     if (**shared_pusher_lock) (*s_log)->log("Pusher locked", info);
                                     utils::sleep(50);
                                 }
-                                if (state) {
+                                if (state ) {
                                     counter++;
                                 }
                                 else {

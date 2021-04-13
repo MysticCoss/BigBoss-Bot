@@ -430,7 +430,7 @@ namespace discordbot {
                 curl_easy_setopt(curl, CURLOPT_CAINFO, "curl-ca-bundle.crt");
                 curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
 
-                list = curl_slist_append(list, ("Authorization: Bot "+str_token).c_str());
+                list = curl_slist_append(list, ("Authorization: Bot " + str_token).c_str());
                 list = curl_slist_append(list, "Content-Type: application/json");
                 char buf[CURL_ERROR_SIZE];
                 curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, buf);
