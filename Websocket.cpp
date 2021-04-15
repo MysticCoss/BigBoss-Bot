@@ -703,10 +703,10 @@ namespace discordbot {
                             (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
                             this->playing = play(selfqueue.front());
                             selfqueue.pop();
-                            (*s_log)->log("[Pusher] Sleep 100ms", info);
-                            utils::sleep(100);
+                            (*s_log)->log("[Pusher] Sleep 500ms", info);
+                            utils::sleep(500);
                             (*s_log)->log("[Pusher] Player playing, wait for player", info);
-                            while (**shared_running) {
+                            while (**shared_running == true) {
                                 utils::sleep(50);
                                 counter = 0;
                             }
@@ -735,7 +735,7 @@ namespace discordbot {
                             }
                             //std::cout << counter << std::endl;
                         }
-                        if (counter >= 35555) {
+                        if (counter >= 55555) {
                             disconnect_queue->push(this->guildid);
                             counter = 0;
                         }
@@ -745,7 +745,7 @@ namespace discordbot {
             } 
             else {
                 if (pusher.is_done()) { //somehow the thread is terminated, unknown reason
-                    (*s_log)->log("Somehow pusher is terminated, start it again", info);
+                    (*s_log)->log("Somehow pusher is terminated, start it again", notification);
                     //auto s_log = std::make_shared<discordbot::logger*>(logger);
                     pusher = concurrency::create_task([this, shared_running, shared_pusher_lock, s_log, shared_loop, shared_nowplaying, disconnect_queue] {
                         int counter = 0;
@@ -758,7 +758,7 @@ namespace discordbot {
                                 this->playing = play(selfqueue.front());
                                 selfqueue.pop();
                                 (*s_log)->log("[Pusher] Sleep 100ms", info);
-                                utils::sleep(100);
+                                utils::sleep(500);
                                 (*s_log)->log("[Pusher] Player playing, wait for player", info);
                                 while (**shared_running) {
                                     utils::sleep(50);
@@ -789,7 +789,7 @@ namespace discordbot {
                                 }
                                 //std::cout << counter << std::endl;
                             }
-                            if (counter >= 35555) {
+                            if (counter >= 55555) {
                                 disconnect_queue->push(this->guildid);
                                 counter = 0;
                             }
@@ -801,10 +801,10 @@ namespace discordbot {
         }
 
         concurrency::task<void> play(std::string id) {
-            running = true;
             auto shared_nowplaying = std::make_shared<std::string*>(&nowplaying);
             auto shared_token = std::make_shared<concurrency::cancellation_token*>(&p_token);
             auto shared_running = std::make_shared<bool*>(&running);
+            **shared_running = true;
             auto s_log = std::make_shared<discordbot::logger*>(logger);
             return concurrency::create_task([this, id, shared_token, shared_running, s_log, shared_nowplaying] {
                 speak();
@@ -870,12 +870,14 @@ namespace discordbot {
                 timer_event* run_timer = new timer_event();
                 run_timer->set();
                 concurrency::create_task([run_timer, this, shared_token, s_log] {
+                    int i = 0;
                     while (run_timer->get_is_set()) {
                         speak();
                         (*s_log)->log("Speak sent", info);
-                        int i = 0;
+                        i = 0;
                         while (i < 15) {
                             utils::sleep(1000);
+                            i++;
                             if (run_timer->get_is_set() == false) {
                                 (*s_log)->log("Speak packet sender canceled", info);
                                 concurrency::cancel_current_task();
