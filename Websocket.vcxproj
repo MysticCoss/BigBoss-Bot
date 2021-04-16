@@ -24,6 +24,7 @@
     <ProjectGuid>{f2f41f2c-e03c-458f-a828-c1d04770fd89}</ProjectGuid>
     <RootNamespace>Websocket</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>BigBoss-Bot</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -150,7 +151,7 @@
   <ItemGroup>
     <ClCompile Include="log.hpp" />
     <ClCompile Include="udp.hpp" />
-    <ClCompile Include="Websocket.cpp" />
+    <ClCompile Include="entry.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="embed.hpp" />
