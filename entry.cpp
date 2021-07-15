@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include "curl/curl.h"
 #include <iostream>
+#include <ppl.h>
 #include <ppltasks.h>
 #include <time.h>
 #include <thread>
@@ -149,6 +150,8 @@ struct userinfo {
 namespace discordbot {
     class voiceclient {
     private:
+        concurrency::critical_section buffer_lock;
+        concurrency::critical_section pusher_lock;
         bool loop = false;
         std::string nowplaying = "";
         logger* logger;
@@ -156,12 +159,16 @@ namespace discordbot {
         std::string default_channel = "";
         bool is_pusher_locked = false;
         bool first_time = true;
+        concurrency::critical_section running_lock;
         bool running = false; //set true: when player is playing.
+        concurrency::critical_section connect_lock;
         bool connect = false; //set true: when encrypt key received. set false: when close handshake; usage: indicate connection status
+        concurrency::critical_section state_lock;
         bool state = false;   //set true: when encrypt key received. set false: when cleanup; usage: to lock operate of pusher
     public:
         //Variable zone
         concurrency::task<void> pusher;
+        concurrency::critical_section selfqueue_lock;
         std::queue<std::string> selfqueue; //queue for video id
         client* gatewayclient; //cache gateway endpoint
         websocketpp::connection_hdl gatewayhdl; //cache gateway hdl for sending message
@@ -192,6 +199,7 @@ namespace discordbot {
         //lock the pusher until next start
         void lockPusher() {
             logger->log("Try locking pusher", info);
+            pusher_lock.lock();
             if (is_pusher_locked == false) {
                 logger->log("Pusher locked", info);
                 is_pusher_locked = true;
@@ -199,9 +207,11 @@ namespace discordbot {
             else {
                 logger->log("Pusher is already locked", info);
             }
+            pusher_lock.unlock();
         }
 
         void unlockPusher() {
+            pusher_lock.lock();
             logger->log("Try unlocking pusher", info);
             if (is_pusher_locked == true) {
                 logger->log("Pusher unlocked", info);
@@ -210,6 +220,7 @@ namespace discordbot {
             else {
                 logger->log("Pusher is already unlocked", info);
             }
+            pusher_lock.unlock();
         }
 
         void setCurrentVoiceChannel(std::string current_voice_channel) {
@@ -534,16 +545,18 @@ namespace discordbot {
                 t.wait();
             }
 
-
+            running_lock.lock();
             if (running) {
                 logger->log({ "Stop player" }, info);
+                running_lock.unlock();
                 p_cts.cancel(); 
-                playing.wait();
+                //playing.wait();
                 utils::sleep(500);
                 p_cts = concurrency::cancellation_token_source();
                 p_token = p_cts.get_token();
             }
             else {
+                running_lock.unlock();
                 logger->log({ "Player is not running" }, info);
             }
 
@@ -697,19 +710,38 @@ namespace discordbot {
                     int counter = 0;
                     while (1) {
                         int i = 0;
-                        if (selfqueue.size() > 0 && state && !(**shared_running) && !(**shared_pusher_lock)) {
+                        if (selfqueue.size() > 0 && state) {
+                            pusher_lock.lock();
+                            if (!(**shared_pusher_lock) == false) {
+                                break;
+                            }
+                            pusher_lock.unlock();
+                            running_lock.lock();
+                            if (!(**shared_running)==false) {
+                                break;
+                            }
+                            running_lock.unlock();
                             counter = 0;
                             i = 1;
                             (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
-                            this->playing = play(selfqueue.front());
-                            selfqueue.pop();
+                            /*this->playing = */play(selfqueue.front());
+                            if (state) {
+                                selfqueue_lock.lock();
+                                selfqueue.pop();
+                                selfqueue_lock.unlock();
+                            }                           
                             (*s_log)->log("[Pusher] Sleep 500ms", info);
                             utils::sleep(500);
                             (*s_log)->log("[Pusher] Player playing, wait for player", info);
-                            while (**shared_running == true) {
+                            while (1) {
+                                if (**shared_running == false) {
+                                    break;
+                                }
+                                std::cout << ".";
                                 utils::sleep(50);
                                 counter = 0;
                             }
+                            //cs._Acquire_lock();
                             (*s_log)->log("[Pusher] No longer wait for player", info);
                             utils::sleep(50);
                             if (**shared_loop && **shared_nowplaying != "") {
@@ -724,7 +756,9 @@ namespace discordbot {
                                 if (selfqueue.size() <= 0) (*s_log)->log({ "[Pusher] Queue Size <= 0" }, info);
                                 if (state == false) (*s_log)->log("[Pusher] State = false", info);
                                 if (**shared_running) (*s_log)->log("Player is running", info);
+                                pusher_lock.lock();
                                 if (**shared_pusher_lock) (*s_log)->log("Pusher locked", info);
+                                pusher_lock.unlock();
                                 utils::sleep(50);
                             }
                             if (state) {
@@ -743,274 +777,243 @@ namespace discordbot {
                     }
                 });
             } 
-            else {
-                if (pusher.is_done()) { //somehow the thread is terminated, unknown reason
-                    (*s_log)->log("Somehow pusher is terminated, start it again", notification);
-                    //auto s_log = std::make_shared<discordbot::logger*>(logger);
-                    pusher = concurrency::create_task([this, shared_running, shared_pusher_lock, s_log, shared_loop, shared_nowplaying, disconnect_queue] {
-                        int counter = 0;
-                        while (1) {
-                            int i = 0;
-                            if (selfqueue.size() > 0 && state && !(**shared_running) && !(**shared_pusher_lock)) {
-                                counter = 0;
-                                i = 1;
-                                (*s_log)->log("[Pusher] Push video " + selfqueue.front(), notification);
-                                this->playing = play(selfqueue.front());
-                                selfqueue.pop();
-                                (*s_log)->log("[Pusher] Sleep 100ms", info);
-                                utils::sleep(500);
-                                (*s_log)->log("[Pusher] Player playing, wait for player", info);
-                                while (**shared_running) {
-                                    utils::sleep(50);
-                                    counter = 0;
-                                }
-                                (*s_log)->log("[Pusher] No longer wait for player", info);
-                                utils::sleep(50);
-                                if (**shared_loop && **shared_nowplaying != "") {
-                                    (*s_log)->log("[Pusher] Loop on, push last played to queue", info);
-                                    selfqueue.push(**shared_nowplaying);
-                                }
-                            }
-                            else {
-                                if (i == 1) {
-                                    i = 0;
-                                    (*s_log)->log("[Pusher] Pusher sleep", info);
-                                    if (selfqueue.size() <= 0) (*s_log)->log({ "[Pusher] Queue Size <= 0" }, info);
-                                    if (state == false) (*s_log)->log("[Pusher] State = false", info);
-                                    if (**shared_running) (*s_log)->log("Player is running", info);
-                                    if (**shared_pusher_lock) (*s_log)->log("Pusher locked", info);
-                                    utils::sleep(50);
-                                }
-                                if (state ) {
-                                    counter++;
-                                }
-                                else {
-                                    counter = 0;
-                                }
-                                //std::cout << counter << std::endl;
-                            }
-                            if (counter >= 55555) {
-                                disconnect_queue->push(this->guildid);
-                                counter = 0;
-                            }
-                            utils::sleep(50);
-                        }
-                        });
-                }
-            }
         }
 
-        concurrency::task<void> play(std::string id) {
-            auto shared_nowplaying = std::make_shared<std::string*>(&nowplaying);
+        void play(std::string id) {
+            //std::cout << "\nCritical session entered\n";
+            //auto shared_nowplaying = std::make_shared<std::string*>(&nowplaying);
             auto shared_token = std::make_shared<concurrency::cancellation_token*>(&p_token);
             auto shared_running = std::make_shared<bool*>(&running);
+            running_lock.lock();
             **shared_running = true;
+            running_lock.unlock();
             auto s_log = std::make_shared<discordbot::logger*>(logger);
-            return concurrency::create_task([this, id, shared_token, shared_running, s_log, shared_nowplaying] {
-                speak();
-                std::string title = utils::youtubeGetTitle(id);
-                **shared_nowplaying = id;
-                std::string payload = ":white_flower: Now playing:\n";
-                payload = payload + "\"" + title + "\":notes: ";
-                utils::sendMsg(payload, default_channel);
-                (*s_log)->log("Create audio source", info);
-                audio* source = new audio(*s_log, id);
-                const unsigned short FRAME_MILLIS = 20;
-                const unsigned short FRAME_SIZE = 960;
-                const unsigned short SAMPLE_RATE = 48000;
-                const unsigned short CHANNELS = 2;
-                const unsigned int BITRATE = 100000;
-                #define MAX_PACKET_SIZE FRAME_SIZE * 7
-                int error;
-                (*s_log)->log("Creating opus encoder", info);
-                (*s_log)->log("FRAME_MILLIS: " + std::to_string(FRAME_MILLIS), info);
-                (*s_log)->log("FRAME_SIZE: " + std::to_string(FRAME_SIZE), info);
-                (*s_log)->log("SAMPLE_RATE: " + std::to_string(SAMPLE_RATE), info);
-                (*s_log)->log("CHANNELS: " + std::to_string(CHANNELS), info);
-                (*s_log)->log("BITRATE: " + std::to_string(BITRATE), info);
-                OpusEncoder* encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, OPUS_APPLICATION_AUDIO, &error);
-                if (error < 0) {
-                    (*s_log)->log("Failed to create opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
-                    throw "Failed to create opus encoder: " + std::string(opus_strerror(error));
-                }
-                //error = opus_encoder_ctl(encoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
-                //if (error < 0) {
-                //    throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
-                //}
-                error = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(BITRATE));
-                if (error < 0) {
-                    (*s_log)->log("Failed to set bitrate for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
-                    throw "Failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
-                }
-                error = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(expected_packet_loss));
-                if (error < 0) {
-                    (*s_log)->log("Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
-                    throw "Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error));
-                }
+            speak();
+            std::string title = utils::youtubeGetTitle(id);
+            nowplaying = id;
+            std::string payload = ":white_flower: Now playing:\n";
+            payload = payload + "\"" + title + "\":notes: ";
+            utils::sendMsg(payload, default_channel);
+            (*s_log)->log("Create audio source", info);
+            audio* source = new audio(*s_log, id);
+            const unsigned short FRAME_MILLIS = 20;
+            const unsigned short FRAME_SIZE = 960;
+            const unsigned short SAMPLE_RATE = 48000;
+            const unsigned short CHANNELS = 2;
+            const unsigned int BITRATE = 100000;
+            #define MAX_PACKET_SIZE FRAME_SIZE * 7
+            int error;
+            (*s_log)->log("Creating opus encoder", info);
+            (*s_log)->log("FRAME_MILLIS: " + std::to_string(FRAME_MILLIS), info);
+            (*s_log)->log("FRAME_SIZE: " + std::to_string(FRAME_SIZE), info);
+            (*s_log)->log("SAMPLE_RATE: " + std::to_string(SAMPLE_RATE), info);
+            (*s_log)->log("CHANNELS: " + std::to_string(CHANNELS), info);
+            (*s_log)->log("BITRATE: " + std::to_string(BITRATE), info);
+            OpusEncoder* encoder = opus_encoder_create(SAMPLE_RATE, CHANNELS, OPUS_APPLICATION_AUDIO, &error);
+            if (error < 0) {
+                (*s_log)->log("Failed to create opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
+                throw "Failed to create opus encoder: " + std::string(opus_strerror(error));
+            }
+            //error = opus_encoder_ctl(encoder, OPUS_SET_BANDWIDTH(OPUS_BANDWIDTH_FULLBAND));
+            //if (error < 0) {
+            //    throw "failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+            //}
+            error = opus_encoder_ctl(encoder, OPUS_SET_BITRATE(BITRATE));
+            if (error < 0) {
+                (*s_log)->log("Failed to set bitrate for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
+                throw "Failed to set bitrate for opus encoder: " + std::string(opus_strerror(error));
+            }
+            error = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(expected_packet_loss));
+            if (error < 0) {
+                (*s_log)->log("Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
+                throw "Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error));
+            }
 
-                if (sodium_init() == -1) {
-                    (*s_log)->log("Libsodium initialisation failed", severity_level::error);
-                    throw "Libsodium initialisation failed";
-                }
+            if (sodium_init() == -1) {
+                (*s_log)->log("Libsodium initialisation failed", severity_level::error);
+                throw "Libsodium initialisation failed";
+            }
 
-                int num_opus_bytes;
-                unsigned char* pcm_data = new unsigned char[FRAME_SIZE * CHANNELS * 2];
-                opus_int16* in_data;
-                std::vector<unsigned char> opus_data(MAX_PACKET_SIZE);
+            int num_opus_bytes;
+            unsigned char* pcm_data = new unsigned char[FRAME_SIZE * CHANNELS * 2];
+            opus_int16* in_data;
+            std::vector<unsigned char> opus_data(MAX_PACKET_SIZE);
 
-                class timer_event {
-                    bool is_set = false;
+            class timer_event {
+                bool is_set = false;
 
-                public:
-                    bool get_is_set() { return is_set; };
-                    void set() { is_set = true; };
-                    void unset() { is_set = false; };
-                };
+            public:
+                bool get_is_set() { return is_set; };
+                void set() { is_set = true; };
+                void unset() { is_set = false; };
+            };
 
-                timer_event* run_timer = new timer_event();
-                run_timer->set();
-                concurrency::create_task([run_timer, this, shared_token, s_log] {
-                    int i = 0;
-                    while (run_timer->get_is_set()) {
-                        speak();
-                        (*s_log)->log("Speak sent", info);
-                        i = 0;
-                        while (i < 15) {
-                            utils::sleep(1000);
-                            i++;
-                            if (run_timer->get_is_set() == false) {
-                                (*s_log)->log("Speak packet sender canceled", info);
-                                concurrency::cancel_current_task();
-                                return;
-                            }
-                            if ((*shared_token)->is_canceled()) {
-                                (*s_log)->log("Speak packet sender canceled", info);
-                                concurrency::cancel_current_task();
-                                return;
-                            }
+            timer_event* run_timer = new timer_event();
+            run_timer->set();
+            concurrency::create_task([run_timer, this, shared_token, s_log] {
+                int i = 0;
+                while (run_timer->get_is_set()) {
+                    speak();
+                    (*s_log)->log("Speak sent", info);
+                    i = 0;
+                    while (i < 15) {
+                        utils::sleep(1000);
+                        i++;
+                        if (run_timer->get_is_set() == false) {
+                            (*s_log)->log("Speak packet sender canceled", info);
+                            concurrency::cancel_current_task();
+                            return;
                         }
-                    }});
-                std::deque<std::string>* buffer = new std::deque<std::string>();
-                auto shared_offset = std::make_shared<long long*>(&offset);
-                auto timer = concurrency::create_task([run_timer, this, buffer, FRAME_MILLIS, shared_token, shared_offset, shared_running, s_log] {
-                    while (run_timer->get_is_set() || buffer->size() > 0) {
-                        utils::sleep(5 * FRAME_MILLIS);
-                        **shared_running = true;
-                        int sent = 0;
-                        auto start = boost::chrono::high_resolution_clock::now();
-                        while (buffer->size() > 0) {
-                            if (udpclient.send(buffer->front()) != 0) {
-                                (*s_log)->log("UDP error, stop player", severity_level::error);
-                                **shared_running = false;
-                                return;
-                            }
-                            buffer->pop_front();
-                            if ((*shared_token)->is_canceled()) {
-                                (*s_log)->log("Player  canceled", info);
-                                **shared_running = false;
-                                concurrency::cancel_current_task();
-                            }
-                            sent++;
-                            long long next_time = (long long)(sent+1) * (long long)(FRAME_MILLIS) * 1000 ;
-                            auto now = boost::chrono::high_resolution_clock::now();
-                            long long mcs_elapsed = (boost::chrono::duration_cast<boost::chrono::microseconds>(now - start)).count(); // elapsed time from start loop
-                            long long delay = std::max((long long)0, (next_time - mcs_elapsed));
-                            utils::timerSleep(delay*10e-6); //sleep microseconds                           
-                        }    
-                        **shared_running = false;
-                    }
-                    });
-                unsigned short _sequence = 0;
-                unsigned int _timestamp = 0;
-                int totalsize = 0;
-                int cached_expected_packet_loss = 0;
-                while (1) {
-                    if (buffer->size() >= 20) {
-                        utils::sleep(FRAME_MILLIS);
-                    }
-                    if (cached_expected_packet_loss != expected_packet_loss) {
-                        cached_expected_packet_loss = expected_packet_loss;
-                        error = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(expected_packet_loss));
-                        if (error < 0) {
-                            (*s_log)->log("Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
-                            throw "Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error));
+                        if ((*shared_token)->is_canceled()) {
+                            (*s_log)->log("Speak packet sender canceled", info);
+                            concurrency::cancel_current_task();
+                            return;
                         }
                     }
-                    if (source->read((char*)pcm_data, FRAME_SIZE * CHANNELS * 2) != true)
-                        break;
-                    if ((*shared_token)->is_canceled()) {
-                        (*s_log)->log("Encoder canceled", info);
-                        break;
+                }});
+            std::deque<std::string>* buffer = new std::deque<std::string>();
+            auto shared_offset = std::make_shared<long long*>(&offset);
+            auto timer = concurrency::create_task([run_timer, this, buffer, FRAME_MILLIS, shared_token, shared_offset, shared_running, s_log] {
+                while (run_timer->get_is_set() || buffer->size() > 0) {
+                    utils::sleep(5 * FRAME_MILLIS);
+                    running_lock.lock();
+                    **shared_running = true;
+                    running_lock.unlock();
+                    int sent = 0;
+                    auto start = boost::chrono::high_resolution_clock::now();
+                    while (buffer->size() > 0) {
+                        buffer_lock.lock();
+                        if (udpclient.send(buffer->front()) != 0) {
+                            (*s_log)->log("UDP error, stop player", severity_level::error);
+                            running_lock.lock();
+                            **shared_running = false;
+                            running_lock.unlock();
+                            return;
+                        }
+                        buffer->pop_front();
+                        buffer_lock.unlock();
+                        if ((*shared_token)->is_canceled()) {
+                            (*s_log)->log("Player canceled", info);
+                            running_lock.lock();
+                            **shared_running = false;
+                            running_lock.unlock();
+                            concurrency::cancel_current_task();
+                        }
+                        sent++;
+                        long long next_time = (long long)(sent + 1) * (long long)(FRAME_MILLIS) * 1000;
+                        auto now = boost::chrono::high_resolution_clock::now();
+                        long long mcs_elapsed = (boost::chrono::duration_cast<boost::chrono::microseconds>(now - start)).count(); // elapsed time from start loop
+                        long long delay = std::max((long long)0, (next_time - mcs_elapsed));
+                        utils::timerSleep(delay * 10e-6); //sleep microseconds                           
                     }
-
-                    in_data = reinterpret_cast<opus_int16*>(pcm_data);
-                    //in_data = (opus_int16*)pcm_data;
-                    num_opus_bytes = opus_encode(encoder, in_data, FRAME_SIZE, opus_data.data(), MAX_PACKET_SIZE);
-                    if (num_opus_bytes <= 0) {
-                        (*s_log)->log("failed to encode frame: " + std::string(opus_strerror(num_opus_bytes)), severity_level::error);
-                        throw "failed to encode frame: " + std::string(opus_strerror(num_opus_bytes));
-                    }
-
-                    opus_data.resize(num_opus_bytes);
-                    std::vector<unsigned char> packet(12 + opus_data.size() + crypto_secretbox_MACBYTES);
-
-                    packet[0] = 0x80;	//Type
-                    packet[1] = 0x78;	//Version
-
-                    packet[2] = _sequence >> 8;	//Sequence
-                    packet[3] = (unsigned char)_sequence;
-
-                    packet[4] = _timestamp >> 24;	//Timestamp
-                    packet[5] = _timestamp >> 16;
-                    packet[6] = _timestamp >> 8;
-                    packet[7] = _timestamp;
-
-                    packet[8] = (unsigned char)(ssrc >> 24);	//SSRC
-                    packet[9] = (unsigned char)(ssrc >> 16);
-                    packet[10] = (unsigned char)(ssrc >> 8);
-                    packet[11] = (unsigned char)ssrc;
-
-                    _sequence++;
-                    _timestamp += SAMPLE_RATE / 1000 * FRAME_MILLIS; //48000Hz / 1000 * 20(ms)
-                    
-                    if (_sequence < 10) { //skip first 10 frames
-                        continue;
-                    }
-                    unsigned char nonce[crypto_secretbox_NONCEBYTES];
-                    memset(nonce, 0, crypto_secretbox_NONCEBYTES);
-
-                    for (int i = 0; i < 12; i++) {
-                        nonce[i] = packet[i];
-                    }
-
-                    crypto_secretbox_easy(packet.data() + 12, opus_data.data(), opus_data.size(), nonce, key.data());
-
-                    packet.resize(12 + opus_data.size() + crypto_secretbox_MACBYTES);
-
-                    std::string msg;
-                    msg.resize(packet.size(), '\0');
-                    for (unsigned int i = 0; i < packet.size(); i++) {
-                        msg[i] = packet[i];
-                    }
-                    totalsize += msg.length();                    
-                    buffer->push_back(msg);
+                    running_lock.lock();
+                    **shared_running = false;
+                    running_lock.unlock();
                 }
-                (*s_log)->log("Total size: " + std::to_string(totalsize), info);
-                (*s_log)->log("Unset timer", info);
-                run_timer->unset();
-                (*s_log)->log("Wait for player exit", info);
-                timer.wait();   
-                unspeak();
-                (*s_log)->log("Unspeack packet sent", info);
-                **shared_running = false;
-                delete run_timer;
-                delete buffer;
-                (*s_log)->log("Destroy encoder", info);
-                opus_encoder_destroy(encoder);
-
-                delete[] pcm_data;
-
                 });
+            unsigned short _sequence = 0;
+            unsigned int _timestamp = 0;
+            int totalsize = 0;
+            int cached_expected_packet_loss = 0;
+            while (1) {
+                if (buffer->size() >= 20) {
+                    utils::sleep(FRAME_MILLIS);
+                }
+                if (timer.is_done()) {
+                    break;
+                }
+                if (cached_expected_packet_loss != expected_packet_loss) {
+                    cached_expected_packet_loss = expected_packet_loss;
+                    error = opus_encoder_ctl(encoder, OPUS_SET_PACKET_LOSS_PERC(expected_packet_loss));
+                    if (error < 0) {
+                        (*s_log)->log("Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error)), severity_level::error);
+                        throw "Failed to set packet loss perc for opus encoder: " + std::string(opus_strerror(error));
+                    }
+                }
+                if (source->read((char*)pcm_data, FRAME_SIZE * CHANNELS * 2) != true)
+                    break;
+                if ((*shared_token)->is_canceled()) {
+                    (*s_log)->log("Encoder canceled", info);
+                    break;
+                }
+
+                in_data = reinterpret_cast<opus_int16*>(pcm_data);
+                //in_data = (opus_int16*)pcm_data;
+                num_opus_bytes = opus_encode(encoder, in_data, FRAME_SIZE, opus_data.data(), MAX_PACKET_SIZE);
+                if (num_opus_bytes <= 0) {
+                    (*s_log)->log("failed to encode frame: " + std::string(opus_strerror(num_opus_bytes)), severity_level::error);
+                    throw "failed to encode frame: " + std::string(opus_strerror(num_opus_bytes));
+                }
+
+                opus_data.resize(num_opus_bytes);
+                std::vector<unsigned char> packet(12 + opus_data.size() + crypto_secretbox_MACBYTES);
+
+                packet[0] = 0x80;	//Type
+                packet[1] = 0x78;	//Version
+
+                packet[2] = _sequence >> 8;	//Sequence
+                packet[3] = (unsigned char)_sequence;
+
+                packet[4] = _timestamp >> 24;	//Timestamp
+                packet[5] = _timestamp >> 16;
+                packet[6] = _timestamp >> 8;
+                packet[7] = _timestamp;
+
+                packet[8] = (unsigned char)(ssrc >> 24);	//SSRC
+                packet[9] = (unsigned char)(ssrc >> 16);
+                packet[10] = (unsigned char)(ssrc >> 8);
+                packet[11] = (unsigned char)ssrc;
+
+                _sequence++;
+                _timestamp += SAMPLE_RATE / 1000 * FRAME_MILLIS; //48000Hz / 1000 * 20(ms)
+
+                if (_sequence < 10) { //skip first 10 frames
+                    continue;
+                }
+                unsigned char nonce[crypto_secretbox_NONCEBYTES];
+                memset(nonce, 0, crypto_secretbox_NONCEBYTES);
+
+                for (int i = 0; i < 12; i++) {
+                    nonce[i] = packet[i];
+                }
+
+                crypto_secretbox_easy(packet.data() + 12, opus_data.data(), opus_data.size(), nonce, key.data());
+
+                packet.resize(12 + opus_data.size() + crypto_secretbox_MACBYTES);
+
+                std::string msg;
+                msg.resize(packet.size(), '\0');
+                for (unsigned int i = 0; i < packet.size(); i++) {
+                    msg[i] = packet[i];
+                }
+                totalsize += msg.length();
+                buffer_lock.lock();
+                buffer->push_back(msg);
+                buffer_lock.unlock();
+            }
+            (*s_log)->log("Total size: " + std::to_string(totalsize), info);
+            (*s_log)->log("Unset timer", info);
+            run_timer->unset();
+            (*s_log)->log("Wait for player exit", info);
+            timer.wait();
+            unspeak();
+            (*s_log)->log("Unspeack packet sent", info);
+            running_lock.lock();
+            **shared_running = false;
+            running_lock.unlock();
+            //cs.unlock();
+            delete run_timer;
+            delete buffer;
+            (*s_log)->log("Destroy encoder", info);
+            opus_encoder_destroy(encoder);
+
+            delete[] pcm_data;
+
+            /*concurrency::task<void> t = concurrency::create_task([this, id, shared_token, shared_running, s_log, shared_nowplaying] {
+                
+                });*/
+            //std::cout << "\nCritical session end\n";
+            return;
         }
 
         void disconnect(std::string guildid, client* c, websocketpp::connection_hdl hdl) {
@@ -1232,25 +1235,21 @@ namespace discordbot {
                     }
 
                     if (event == R"(MESSAGE_UPDATE)") {
-                        if (js_msg["d"]["author"]["bot"].is_boolean()) {
-                            if (js_msg["d"]["author"]["bot"] == true) {
-                                (*s_log)->log("Skip bot's msg", info);
-                                break;
-                            }
+                        if (!js_msg["d"]["author"]["bot"].is_null()) {
+                            (*s_log)->log("Skip bot's msg", info);
+                            break;
                         }
                     }
 
                     if (event == R"(MESSAGE_CREATE)") { //MSG CREATE EVENT
-                        if (js_msg["d"]["author"]["bot"].is_boolean()) {
-                            if (js_msg["d"]["author"]["bot"] == true) {
+                        if (!js_msg["d"]["author"]["bot"].is_null()) {
                                 (*s_log)->log("Skip bot's msg", info);
                                 break;
-                            }
                         }
                         std::string channel = ""; //CHANNEL ID
                         if (js_msg["d"]["channel_id"].is_string()) {
                             channel = js_msg["d"]["channel_id"];
-                            (*s_log)->log("Parsed channel id from message, channel id:" + channel, info);
+                            //(*s_log)->log("Parsed channel id from message, channel id:" + channel, info);
                         }
                         else {
                             (*s_log)->log("Can not parse channel id from message:" + msg->get_payload(), error);
@@ -1259,7 +1258,7 @@ namespace discordbot {
                         std::string guild = ""; //GUILD ID
                         if (js_msg["d"]["guild_id"].is_string()) {
                             guild = js_msg["d"]["guild_id"];
-                            (*s_log)->log("Parsed guild id from message, guild id:" + guild, info);
+                            //(*s_log)->log("Parsed guild id from message, guild id:" + guild, info);
                         }
                         else {
                             (*s_log)->log("Can not parse guild id from message:" + msg->get_payload(), error);
@@ -1268,16 +1267,23 @@ namespace discordbot {
                         std::string content = ""; //MSG CONTENT
                         if (js_msg["d"]["content"].is_string()) {
                             content = js_msg["d"]["content"];
-                            (*s_log)->log("Parsed message content from message, message content:" + content, info);
+                            //(*s_log)->log("Parsed message content from message, message content:" + content, info);
                         }
                         else {
                             (*s_log)->log("Can not parse content from message:" + msg->get_payload(), error);
                         }
 
+                        std::string message = "";
+                        if (js_msg["d"]["id"].is_string()) {
+                            message = js_msg["d"]["id"];
+                            //(*s_log)->log("Parsed message id from message, author id:" + message, info);
+                        }
+                        else (*s_log)->log("Can not parse message id from message: " + msg->get_payload(), error);
+
                         std::string userid = ""; //AUTHOR ID
                         if (js_msg["d"]["author"]["id"].is_string()) {
                             userid = js_msg["d"]["author"]["id"];
-                            (*s_log)->log("Parsed author id from message, author id:" + userid, info);
+                            //(*s_log)->log("Parsed author id from message, author id:" + userid, info);
                         }
                         else (*s_log)->log("Can not parse userid from message: " + msg->get_payload(), error);
 
@@ -1313,11 +1319,15 @@ namespace discordbot {
                                             if (usergroup[guild][userid]->get_voice_channel_id() != voicegroup[guild]->getCurrentVoiceChannel()) {
                                                 (*s_log)->log("User request music is in different voice channel with target voice endpoint, expected change", info);
                                                 voicegroup[guild]->lockPusher();
+                                                voicegroup[guild]->selfqueue_lock.lock();
                                                 voicegroup[guild]->selfqueue.push(id);
+                                                voicegroup[guild]->selfqueue_lock.unlock();
                                                 (*s_log)->log("User " + userid + " selected video " + id, info);
                                             }
                                             else {
+                                                voicegroup[guild]->selfqueue_lock.lock();
                                                 voicegroup[guild]->selfqueue.push(id);
+                                                voicegroup[guild]->selfqueue_lock.unlock();
                                                 (*s_log)->log("User " + userid + " selected video " + id, info);
                                             }
                                             websocketpp::lib::error_code ec;
@@ -1353,11 +1363,15 @@ namespace discordbot {
                                             if (usergroup[guild][userid]->get_voice_channel_id() != voicegroup[guild]->getCurrentVoiceChannel()) {
                                                 (*s_log)->log("User request music is in different voice channel with target voice endpoint, expected change", info);
                                                 voicegroup[guild]->lockPusher();
+                                                voicegroup[guild]->selfqueue_lock.lock();
                                                 voicegroup[guild]->selfqueue.push(id);
+                                                voicegroup[guild]->selfqueue_lock.unlock();
                                                 (*s_log)->log("User " + userid + " selected video " + id, info);
                                             }
                                             else {
+                                                voicegroup[guild]->selfqueue_lock.lock();
                                                 voicegroup[guild]->selfqueue.push(id);
+                                                voicegroup[guild]->selfqueue_lock.unlock();
                                                 (*s_log)->log("User " + userid + " selected video " + id, info);
                                             }
                                             websocketpp::lib::error_code ec;
@@ -1438,7 +1452,9 @@ namespace discordbot {
                                                         if (usergroup[guild][userid]->get_voice_channel_id() != voicegroup[guild]->getCurrentVoiceChannel()) {
                                                             (*s_log)->log("User request music is in different voice channel with target voice endpoint, expected change", info);
                                                             voicegroup[guild]->lockPusher();
+                                                            voicegroup[guild]->selfqueue_lock.lock();
                                                             voicegroup[guild]->selfqueue.push(temp->data[selected - 1]);
+                                                            voicegroup[guild]->selfqueue_lock.unlock();
                                                             if (utils::deleteMsg(*s_log, temp->gettMessageId(), channel)) {
                                                                 (*s_log)->log("Deleted print result message", info);
                                                             }
@@ -1448,7 +1464,9 @@ namespace discordbot {
                                                             if (utils::deleteMsg(*s_log, temp->gettMessageId(), channel)) {
                                                                 (*s_log)->log("Deleted print result message", info);
                                                             }
+                                                            voicegroup[guild]->selfqueue_lock.lock();
                                                             voicegroup[guild]->selfqueue.push(temp->data[selected - 1]);
+                                                            voicegroup[guild]->selfqueue_lock.unlock();
                                                             (*s_log)->log("User " + userid + " selected video " + temp->data[selected - 1], info);
                                                         }
                                                         websocketpp::lib::error_code ec;
@@ -1478,6 +1496,11 @@ namespace discordbot {
                                 }
                                 else break;
                             }
+                            break;
+                        }
+
+                        if (content == ".") {
+                            utils::deleteMsg(*s_log, message, channel);
                             break;
                         }
 
@@ -1569,13 +1592,16 @@ namespace discordbot {
                             if (voicegroup.find(guild) != voicegroup.end()) {
                                 if (voicegroup[guild]->_loop()) {
                                     utils::sendMsg("Loop `on`", channel);
+                                    break;
                                 }
                                 else {
                                     utils::sendMsg("Loop `off`", channel);
+                                    break;
                                 }
                             }
                             else {
                                 utils::sendMsg("You must play music at lease one time to be able to config", channel);
+                                break;
                             }
                         }
                        

@@ -1,0 +1,3 @@
+1. Pusher sometimes stop
+2. When start pusher again cause exception
+3. admin disconnect cause read access violation
